@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import unicodedata
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -269,6 +271,20 @@ if "auth_user_id" not in st.session_state:
 if "auth_user_email" not in st.session_state:
     st.session_state.auth_user_email = None
 
+if "project_name_widget" not in st.session_state:
+    st.session_state.project_name_widget = sample_data["project_name"]
+
+if "save_project_name_dashboard" not in st.session_state:
+    st.session_state.save_project_name_dashboard = sample_data["project_name"]
+
+def _safe_filename(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "projeto"))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "projeto"
+
 def _use_supabase_storage() -> bool:
     return (
         st.session_state.get("storage_mode") == "Supabase beta"
@@ -317,6 +333,8 @@ with st.sidebar:
 
     if st.button("Carregar exemplo"):
         st.session_state.dash_form_data = sample_data.copy()
+        st.session_state.project_name_widget = sample_data["project_name"]
+        st.session_state.save_project_name_dashboard = sample_data["project_name"]
         st.session_state.current_project_id = None
         st.session_state.selected_project_id = None
         st.session_state.latest_results = None
@@ -398,7 +416,13 @@ with st.sidebar:
         if st.button("Abrir projeto"):
             if st.session_state.selected_project_id:
                 saved = _load_project_active(st.session_state.selected_project_id)
-                st.session_state.dash_form_data = saved.get("inputs", sample_data.copy())
+                loaded_inputs = saved.get("inputs", sample_data.copy())
+                meta_name = saved.get("project_meta", {}).get("project_name")
+                if meta_name:
+                    loaded_inputs["project_name"] = meta_name
+                st.session_state.dash_form_data = loaded_inputs
+                st.session_state.project_name_widget = loaded_inputs.get("project_name", sample_data["project_name"])
+                st.session_state.save_project_name_dashboard = loaded_inputs.get("project_name", sample_data["project_name"])
                 st.session_state.current_project_id = saved.get("project_meta", {}).get("project_id")
                 st.session_state.latest_results = saved.get("results")
                 st.success("Projeto carregado com sucesso.")
@@ -407,6 +431,8 @@ with st.sidebar:
     with cproj2:
         if st.button("Novo projeto"):
             st.session_state.dash_form_data = sample_data.copy()
+            st.session_state.project_name_widget = sample_data["project_name"]
+            st.session_state.save_project_name_dashboard = sample_data["project_name"]
             st.session_state.current_project_id = None
             st.session_state.selected_project_id = None
             st.session_state.latest_results = None
@@ -490,7 +516,9 @@ with tab1:
     c1, c2 = st.columns(2)
 
     with c1:
-        fd["project_name"] = st.text_input("Nome do projeto", fd["project_name"])
+        fd["project_name"] = st.text_input("Nome do projeto", key="project_name_widget")
+        st.session_state.dash_form_data["project_name"] = fd["project_name"]
+        st.session_state.save_project_name_dashboard = fd["project_name"]
         fd["author_name"] = st.text_input("Autor", fd["author_name"])
         fd["species"] = st.text_input("Espécie", fd["species"])
         fd["system_type"] = st.text_input("Sistema de cultivo", fd["system_type"])
@@ -942,9 +970,20 @@ def render_kpi_card(
 with tab5:
     st.subheader("Indicadores principais")
 
-    save_col1, save_col2 = st.columns([1.2, 2.8])
-    with save_col1:
+    st.markdown("#### Salvamento do projeto")
+    save_name_col, save_button_col = st.columns([2.2, 1.0])
+    with save_name_col:
+        fd["project_name"] = st.text_input(
+            "Nome do projeto para salvar",
+            key="save_project_name_dashboard",
+            help="Esse nome aparecerá na lista de projetos salvos e na geração dos relatórios.",
+        )
+        st.session_state.dash_form_data["project_name"] = fd["project_name"]
+
+    with save_button_col:
+        st.markdown("<div style='height: 1.85rem;'></div>", unsafe_allow_html=True)
         if st.button("Salvar projeto completo", type="primary"):
+            st.session_state.dash_form_data["project_name"] = fd.get("project_name", "Projeto")
             payload = build_project_payload(
                 st.session_state.dash_form_data,
                 results,
@@ -953,13 +992,14 @@ with tab5:
             project_id = _save_project_active(payload, st.session_state.current_project_id)
             st.session_state.current_project_id = project_id
             st.session_state.selected_project_id = project_id
-            st.success(f"Projeto salvo com resultados: {project_id}")
+            st.success(f"Projeto salvo: {fd.get('project_name', project_id)}")
 
-    with save_col2:
-        if st.session_state.current_project_id:
-            st.caption(f"Projeto ativo: {st.session_state.current_project_id}")
-        else:
-            st.caption("Projeto ainda não salvo. Use o botão ao lado para registrar este cenário.")
+    if st.session_state.current_project_id:
+        st.caption(
+            f"Projeto ativo: {fd.get('project_name', 'Projeto')} · ID interno: {st.session_state.current_project_id}"
+        )
+    else:
+        st.caption("Projeto ainda não salvo. Defina o nome acima e use o botão ao lado para registrar este cenário.")
 
     c1, c2, c3, c4 = st.columns(4)
     render_kpi_card(c1, "Produção/ciclo", f"{num(base_res.get('production_per_cycle_kg'))} kg", "#2f6fdf", "#eef4ff", "📦", "Volume produtivo do ciclo")
@@ -1328,40 +1368,54 @@ with tab6:
 
     st.info(f"Pasta de saída atual: {save_dir}")
 
+    current_project_name = fd.get("project_name", "Projeto")
+    project_slug = _safe_filename(current_project_name)
+    profile_slug_map = {
+        "Produtor": "produtor",
+        "Técnico": "tecnico",
+        "Banco/Financiamento": "banco_financiamento",
+    }
+    profile_slug = profile_slug_map.get(report_profile, "relatorio")
+    final_base_name = f"{project_slug}_{profile_slug}"
+
+    st.caption(
+        f"Os relatórios desta geração serão salvos com base no nome do projeto: {final_base_name}_completo.*"
+    )
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("Gerar Relatório (Markdown)"):
-            md_path = save_dir / f"{output_name}_completo.md"
+            md_path = save_dir / f"{final_base_name}_completo.md"
             md_path.write_text(professional_report, encoding="utf-8")
             st.success(f"Relatório Markdown salvo em: {md_path}")
 
     with col2:
         if st.button("Gerar Relatório Premium (DOCX)"):
-            md_path = save_dir / f"{output_name}_completo.md"
+            md_path = save_dir / f"{final_base_name}_completo.md"
             md_path.write_text(professional_report, encoding="utf-8")
 
-            docx_path = save_dir / f"{output_name}_completo.docx"
+            docx_path = save_dir / f"{final_base_name}_completo.docx"
             export_dashboard_report_to_docx(
                 results,
                 docx_path,
-                inp.project_name,
-                inp.author_name,
+                fd.get("project_name", "Projeto"),
+                fd.get("author_name", ""),
                 report_profile,
             )
             st.success(f"Relatório DOCX premium salvo em: {docx_path}")
 
     with col3:
         if st.button("Gerar Relatório Premium (DOCX + PDF)"):
-            md_path = save_dir / f"{output_name}_completo.md"
+            md_path = save_dir / f"{final_base_name}_completo.md"
             md_path.write_text(professional_report, encoding="utf-8")
 
-            docx_path = save_dir / f"{output_name}_completo.docx"
+            docx_path = save_dir / f"{final_base_name}_completo.docx"
             export_dashboard_report_to_docx(
                 results,
                 docx_path,
-                inp.project_name,
-                inp.author_name,
+                fd.get("project_name", "Projeto"),
+                fd.get("author_name", ""),
                 report_profile,
             )
 
