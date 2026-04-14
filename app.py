@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import tempfile
 import unicodedata
 
 import matplotlib.pyplot as plt
@@ -284,6 +285,11 @@ def _safe_filename(value: str) -> str:
     text = re.sub(r"[^a-z0-9]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
     return text or "projeto"
+
+
+
+def _read_file_bytes(path: str | Path) -> bytes:
+    return Path(path).read_bytes()
 
 def _use_supabase_storage() -> bool:
     return (
@@ -1378,51 +1384,93 @@ with tab6:
     profile_slug = profile_slug_map.get(report_profile, "relatorio")
     final_base_name = f"{project_slug}_{profile_slug}"
 
-    st.caption(
-        f"Os relatórios desta geração serão salvos com base no nome do projeto: {final_base_name}_completo.*"
+    delivery_mode = st.radio(
+        "Entrega dos relatórios",
+        ["Baixar neste computador", "Salvar na pasta outputs"],
+        horizontal=True,
+        index=0 if _use_supabase_storage() else 1,
+        help="Na nuvem, o ideal é baixar os relatórios diretamente para o computador do usuário.",
     )
 
-    col1, col2, col3 = st.columns(3)
+    st.caption(
+        f"Nome base desta geração: {final_base_name}_completo.*"
+    )
 
-    with col1:
-        if st.button("Gerar Relatório (Markdown)"):
-            md_path = save_dir / f"{final_base_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
-            st.success(f"Relatório Markdown salvo em: {md_path}")
+    if delivery_mode == "Baixar neste computador":
+        st.info("Modo recomendado para a nuvem: os relatórios serão baixados diretamente, sem ficarem salvos no servidor.")
 
-    with col2:
-        if st.button("Gerar Relatório Premium (DOCX)"):
-            md_path = save_dir / f"{final_base_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
-
-            docx_path = save_dir / f"{final_base_name}_completo.docx"
+        md_bytes = professional_report.encode("utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_output_dir = Path(tmpdir)
+            tmp_docx_path = tmp_output_dir / f"{final_base_name}_completo.docx"
             export_dashboard_report_to_docx(
                 results,
-                docx_path,
+                tmp_docx_path,
                 fd.get("project_name", "Projeto"),
                 fd.get("author_name", ""),
                 report_profile,
             )
-            st.success(f"Relatório DOCX premium salvo em: {docx_path}")
+            docx_bytes = _read_file_bytes(tmp_docx_path)
 
-    with col3:
-        if st.button("Gerar Relatório Premium (DOCX + PDF)"):
-            md_path = save_dir / f"{final_base_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
-
-            docx_path = save_dir / f"{final_base_name}_completo.docx"
-            export_dashboard_report_to_docx(
-                results,
-                docx_path,
-                fd.get("project_name", "Projeto"),
-                fd.get("author_name", ""),
-                report_profile,
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            st.download_button(
+                "Baixar Relatório (Markdown)",
+                data=md_bytes,
+                file_name=f"{final_base_name}_completo.md",
+                mime="text/markdown",
+            )
+        with dcol2:
+            st.download_button(
+                "Baixar Relatório Premium (DOCX)",
+                data=docx_bytes,
+                file_name=f"{final_base_name}_completo.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
-            try:
-                pdf_path = export_docx_to_pdf(docx_path, save_dir)
-                st.success(f"Relatórios salvos em: {docx_path} e {pdf_path}")
-            except Exception as e:
-                st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
+        st.caption("No modo de download direto, o PDF fica desativado por padrão na nuvem.")
+    else:
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Gerar Relatório (Markdown)"):
+                md_path = save_dir / f"{final_base_name}_completo.md"
+                md_path.write_text(professional_report, encoding="utf-8")
+                st.success(f"Relatório Markdown salvo em: {md_path}")
+
+        with col2:
+            if st.button("Gerar Relatório Premium (DOCX)"):
+                md_path = save_dir / f"{final_base_name}_completo.md"
+                md_path.write_text(professional_report, encoding="utf-8")
+
+                docx_path = save_dir / f"{final_base_name}_completo.docx"
+                export_dashboard_report_to_docx(
+                    results,
+                    docx_path,
+                    fd.get("project_name", "Projeto"),
+                    fd.get("author_name", ""),
+                    report_profile,
+                )
+                st.success(f"Relatório DOCX premium salvo em: {docx_path}")
+
+        with col3:
+            if st.button("Gerar Relatório Premium (DOCX + PDF)"):
+                md_path = save_dir / f"{final_base_name}_completo.md"
+                md_path.write_text(professional_report, encoding="utf-8")
+
+                docx_path = save_dir / f"{final_base_name}_completo.docx"
+                export_dashboard_report_to_docx(
+                    results,
+                    docx_path,
+                    fd.get("project_name", "Projeto"),
+                    fd.get("author_name", ""),
+                    report_profile,
+                )
+
+                try:
+                    pdf_path = export_docx_to_pdf(docx_path, save_dir)
+                    st.success(f"Relatórios salvos em: {docx_path} e {pdf_path}")
+                except Exception as e:
+                    st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
