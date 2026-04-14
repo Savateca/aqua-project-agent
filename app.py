@@ -11,6 +11,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from aqua_project_agent_gui_dashboard_v1.calculator import (
     DEFAULT_FEEDING_CURVE,
     calculate_dashboard_project,
@@ -291,6 +295,15 @@ def _safe_filename(value: str) -> str:
 def _read_file_bytes(path: str | Path) -> bytes:
     return Path(path).read_bytes()
 
+
+def _running_in_cloud() -> bool:
+    return (
+        bool(os.environ.get("IS_STREAMLIT_CLOUD"))
+        or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+        or Path("/mount/src").exists()
+    )
+
+
 def _use_supabase_storage() -> bool:
     return (
         st.session_state.get("storage_mode") == "Supabase beta"
@@ -349,15 +362,23 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Persistência")
 
-    if is_supabase_configured():
-        st.session_state.storage_mode = st.radio(
-            "Modo de armazenamento",
-            ["Local", "Supabase beta"],
-            index=0 if st.session_state.get("storage_mode", "Local") == "Local" else 1,
-        )
+    if _running_in_cloud():
+        if is_supabase_configured():
+            st.session_state.storage_mode = "Supabase beta"
+            st.info("Na versão em nuvem, os projetos ficam vinculados ao usuário no Supabase.")
+        else:
+            st.session_state.storage_mode = "Local"
+            st.warning("Supabase não configurado. O modo local na nuvem não é recomendado.")
     else:
-        st.session_state.storage_mode = "Local"
-        st.info("Supabase ainda não configurado no .env. Usando modo local.")
+        if is_supabase_configured():
+            st.session_state.storage_mode = st.radio(
+                "Modo de armazenamento",
+                ["Local", "Supabase beta"],
+                index=0 if st.session_state.get("storage_mode", "Local") == "Local" else 1,
+            )
+        else:
+            st.session_state.storage_mode = "Local"
+            st.info("Supabase ainda não configurado no .env. Usando modo local.")
 
     if st.session_state.storage_mode == "Supabase beta":
         st.markdown("#### Login beta")
