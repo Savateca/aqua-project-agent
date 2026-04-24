@@ -6,48 +6,506 @@ from dataclasses import asdict
 from .models import DashboardProjectInput
 
 
+def altitude_transfer_factor(altitude_m: float) -> float:
+    """
+    Fator de correção da transferência de oxigênio por altitude,
+    com interpolação linear entre pontos de referência técnicos.
+    """
+    points = [
+        (0.0, 1.00),
+        (305.0, 0.96),
+        (610.0, 0.93),
+        (914.0, 0.89),
+        (1524.0, 0.82),
+        (1829.0, 0.80),
+    ]
+
+    try:
+        alt = max(0.0, float(altitude_m))
+    except (TypeError, ValueError):
+        alt = 0.0
+
+    if alt <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if alt <= x1:
+            ratio = (alt - x0) / (x1 - x0)
+            return y0 + (y1 - y0) * ratio
+
+    # extrapolação conservadora acima do último ponto
+    extra_1000m = (alt - points[-1][0]) / 1000.0
+    factor = points[-1][1] - (0.06 * extra_1000m)
+    return max(0.70, round(factor, 3))
+
+
+def surface_aeration_base_factor(temp_c: float) -> float:
+    if 25 <= temp_c <= 30:
+        return 0.50
+    if 23 <= temp_c < 25 or 30 < temp_c <= 32:
+        return 0.46
+    if 20 <= temp_c < 23 or 32 < temp_c <= 34:
+        return 0.42
+    return 0.38
+
 DEFAULT_FEEDING_CURVE = [
     {
         "phase_name": "Fase 1",
         "min_g": 1.0,
-        "max_g": 100.0,
-        "feeding_rate_percent": 5.0,
+        "max_g": 20.0,
+        "feeding_rate_percent": 8.0,
         "meals_per_day": 4,
-        "protein_percent": 40.0,
+        "protein_percent": 45.0,
         "pellet_mm": 1.0,
         "feed_price_per_kg": 4.2,
+        "phase_fcr": 1.15,
     },
     {
         "phase_name": "Fase 2",
-        "min_g": 100.0,
-        "max_g": 300.0,
-        "feeding_rate_percent": 3.5,
+        "min_g": 20.0,
+        "max_g": 250.0,
+        "feeding_rate_percent": 5.0,
         "meals_per_day": 4,
-        "protein_percent": 36.0,
-        "pellet_mm": 2.0,
+        "protein_percent": 40.0,
+        "pellet_mm": 3.0,
         "feed_price_per_kg": 4.0,
+        "phase_fcr": 1.30,
     },
     {
         "phase_name": "Fase 3",
-        "min_g": 300.0,
-        "max_g": 700.0,
-        "feeding_rate_percent": 2.5,
+        "min_g": 250.0,
+        "max_g": 650.0,
+        "feeding_rate_percent": 3.0,
         "meals_per_day": 3,
-        "protein_percent": 32.0,
+        "protein_percent": 36.0,
         "pellet_mm": 4.0,
         "feed_price_per_kg": 3.8,
+        "phase_fcr": 1.50,
     },
     {
         "phase_name": "Fase 4",
-        "min_g": 700.0,
+        "min_g": 650.0,
         "max_g": 1000.0,
-        "feeding_rate_percent": 1.8,
+        "feeding_rate_percent": 2.2,
         "meals_per_day": 2,
-        "protein_percent": 28.0,
+        "protein_percent": 32.0,
         "pellet_mm": 6.0,
         "feed_price_per_kg": 3.5,
+        "phase_fcr": 1.60,
+    },
+    {
+        "phase_name": "Fase 5",
+        "min_g": 1000.0,
+        "max_g": 2000.0,
+        "feeding_rate_percent": 1.5,
+        "meals_per_day": 2,
+        "protein_percent": 28.0,
+        "pellet_mm": 8.0,
+        "feed_price_per_kg": 3.4,
+        "phase_fcr": 1.70,
     },
 ]
+
+FOUNTAIN_LIBRARY = [
+    {"model": "B-401/B-403", "power_cv": 0.75, "consumption_kwh": 0.63, "sort_kg_h": 1.11, "sae": 1.76, "launch_diameter_m": 3.20},
+    {"model": "B-501/B-503", "power_cv": 1.00, "consumption_kwh": 0.80, "sort_kg_h": 1.87, "sae": 2.33, "launch_diameter_m": 3.70},
+    {"model": "B-601/B-603", "power_cv": 1.50, "consumption_kwh": 1.11, "sort_kg_h": 3.15, "sae": 2.83, "launch_diameter_m": 5.50},
+    {"model": "B-701/B-703", "power_cv": 3.00, "consumption_kwh": 2.81, "sort_kg_h": 6.17, "sae": 2.19, "launch_diameter_m": 6.20},
+]
+
+PADDLEWHEEL_LIBRARY = [
+    {"model": "B-105", "power_cv": 1.00, "consumption_kwh": 0.77, "sort_kg_h": 1.35, "sae": 1.75},
+    {"model": "B-209", "power_cv": 2.00, "consumption_kwh": 1.46, "sort_kg_h": 3.60, "sae": 2.46},
+    {"model": "B-309", "power_cv": 3.00, "consumption_kwh": 2.29, "sort_kg_h": 5.20, "sae": 2.27},
+]
+
+RADIAL_BLOWER_LIBRARY = [
+    {"model": "CRA-370 TS", "power_kw": 1.50, "airflow_m3_h": 150.0, "pressure_mbar": 290.0, "source": "biblioteca preliminar"},
+    {"model": "CRA-550 TS", "power_kw": 1.75, "airflow_m3_h": 240.0, "pressure_mbar": 290.0, "source": "biblioteca preliminar"},
+    {"model": "CRA-750 TS", "power_kw": 2.00, "airflow_m3_h": 340.0, "pressure_mbar": 320.0, "source": "biblioteca preliminar"},
+    {"model": "CRB-700 TS HE", "power_kw": 4.40, "airflow_m3_h": 360.0, "pressure_mbar": 330.0, "source": "Asten"},
+]
+
+LOBULAR_BLOWER_LIBRARY = [
+    {"model": "Família SRT", "power_kw": 3.00, "airflow_m3_h": 1200.0, "pressure_mbar": 350.0},
+]
+
+GROWTH_SUBRANGES_V2 = [
+    {"label": "1-5 g", "min_g": 1.0, "max_g": 5.0, "daily_gain_28_g": 0.15, "evidence": "provisório consolidado"},
+    {"label": "5-20 g", "min_g": 5.0, "max_g": 20.0, "daily_gain_28_g": 0.75, "evidence": "âncora bibliográfica"},
+    {"label": "20-100 g", "min_g": 20.0, "max_g": 100.0, "daily_gain_28_g": 1.80, "evidence": "síntese técnica"},
+    {"label": "100-250 g", "min_g": 100.0, "max_g": 250.0, "daily_gain_28_g": 3.80, "evidence": "síntese técnica"},
+    {"label": "250-650 g", "min_g": 250.0, "max_g": 650.0, "daily_gain_28_g": 6.00, "evidence": "âncora Embrapa"},
+    {"label": "650-1000 g", "min_g": 650.0, "max_g": 1000.0, "daily_gain_28_g": 5.50, "evidence": "faixa controlada"},
+    {"label": "1000-2000 g", "min_g": 1000.0, "max_g": 2000.0, "daily_gain_28_g": 3.50, "evidence": "faixa controlada"},
+]
+
+
+
+def circular_diameter_from_volume(volume_m3: float, depth_m: float) -> float:
+    if depth_m <= 0:
+        return 0.0
+    return math.sqrt((4.0 * volume_m3) / (math.pi * depth_m))
+
+
+def compute_geometry(inp: DashboardProjectInput) -> dict:
+    structure = getattr(inp, "system_type", "Circular revestido")
+    depth = max(float(getattr(inp, "water_depth_m", 1.2)), 0.2)
+
+    if structure == "Circular revestido":
+        volume = max(float(inp.unit_volume_m3), 0.1)
+        diameter = circular_diameter_from_volume(volume, depth)
+        area = math.pi * (diameter ** 2) / 4.0
+        length = diameter
+        width = diameter
+    else:
+        length = max(float(getattr(inp, "tank_length_m", 10.0)), 0.1)
+        width = max(float(getattr(inp, "tank_width_m", 10.0)), 0.1)
+        area = length * width
+        volume = area * depth
+        diameter = 0.0
+
+    return {
+        "depth_m": depth,
+        "unit_volume_m3": volume,
+        "surface_area_m2": area,
+        "diameter_m": diameter,
+        "length_m": length,
+        "width_m": width,
+        "shape": "circular" if structure == "Circular revestido" else "rectangular",
+    }
+
+
+def recommended_depth_for_structure(system_type: str) -> float:
+    return 1.5 if system_type == "Escavado revestido" else 1.2
+
+
+def structure_warning(system_type: str, depth_m: float) -> str:
+    suggested = recommended_depth_for_structure(system_type)
+    if depth_m > suggested * 1.25:
+        return f"Altura de água acima da sugestão usual para {system_type.lower()} ({suggested:.1f} m)."
+    if depth_m < suggested * 0.70:
+        return f"Altura de água abaixo da sugestão usual para {system_type.lower()} ({suggested:.1f} m)."
+    return ""
+
+
+def _clear_span_for_surface_aeration(geometry: dict) -> float:
+    diameter = float(geometry.get("diameter_m", 0.0) or 0.0)
+    if diameter > 0:
+        return diameter
+    length = float(geometry.get("length_m", 0.0) or 0.0)
+    width = float(geometry.get("width_m", 0.0) or 0.0)
+    positive = [v for v in (length, width) if v > 0]
+    return min(positive) if positive else 0.0
+
+
+def _surface_geometry_check(technology: str, equipment: dict, geometry: dict) -> tuple[bool, str]:
+    if technology != "Chafariz":
+        return True, ""
+    launch = float(equipment.get("launch_diameter_m", 0.0) or 0.0)
+    span = _clear_span_for_surface_aeration(geometry)
+    if launch <= 0 or span <= 0:
+        return True, ""
+    required_span = launch * 1.20
+    if span < required_span:
+        return False, (
+            f"Modelo {equipment.get('model','-')} não recomendado: o lance/diâmetro de lançamento (~{launch:.2f} m) "
+            f"pode ser excessivo para a menor dimensão útil do tanque ({span:.2f} m)."
+        )
+    return True, ""
+
+
+def _surface_effective_sort(equipment: dict, temp_factor: float, altitude_factor: float, field_factor: float) -> float:
+    return equipment["sort_kg_h"] * temp_factor * altitude_factor * field_factor
+
+
+def _surface_max_units_per_tank(system_type: str, technology: str) -> int:
+    if technology == "Chafariz":
+        return 2
+    if technology == "Pás":
+        return 2
+    return 1
+
+
+def _surface_technology_allowed(system_type: str, technology: str) -> bool:
+    if technology == "Chafariz":
+        return system_type in ("Circular revestido", "Suspenso revestido retangular")
+    if technology == "Pás":
+        return system_type in ("Suspenso revestido retangular", "Escavado revestido")
+    return True
+
+
+def suggest_surface_aerator(
+    technology: str,
+    system_type: str,
+    oxygen_demand_per_tank_kg_h: float,
+    temp_factor: float,
+    altitude_factor: float,
+    field_factor: float,
+    geometry: dict | None = None,
+) -> dict:
+    library = FOUNTAIN_LIBRARY if technology == "Chafariz" else PADDLEWHEEL_LIBRARY
+    allowed = _surface_technology_allowed(system_type, technology)
+    max_units = _surface_max_units_per_tank(system_type, technology)
+    geometry = geometry or {}
+
+    best = None
+    for equipment in library:
+        effective_sort = _surface_effective_sort(equipment, temp_factor, altitude_factor, field_factor)
+        qty = math.ceil(oxygen_demand_per_tank_kg_h / effective_sort) if effective_sort > 0 else max_units + 1
+        geom_allowed, geom_warning = _surface_geometry_check(technology, equipment, geometry)
+        feasible = allowed and geom_allowed and qty <= max_units
+        installed_supply = effective_sort * max(qty, 0)
+        peak_use_pct = (oxygen_demand_per_tank_kg_h / installed_supply * 100.0) if installed_supply > 0 else 999.0
+        excess_ratio = (installed_supply / oxygen_demand_per_tank_kg_h) if oxygen_demand_per_tank_kg_h > 0 else 999.0
+        preferred_peak_target = 85.0
+        score = (
+            0 if feasible else 1,
+            0 if qty == 1 else 1,
+            abs(peak_use_pct - preferred_peak_target),
+            excess_ratio,
+            equipment["consumption_kwh"] * max(qty, 0),
+            equipment["power_cv"],
+        )
+        candidate = {
+            "technology": technology,
+            "allowed": allowed,
+            "feasible": feasible,
+            "max_units_per_tank": max_units,
+            "model": equipment["model"],
+            "power_cv": equipment["power_cv"],
+            "consumption_kwh_each": equipment["consumption_kwh"],
+            "sort_nominal_kg_h": equipment["sort_kg_h"],
+            "effective_sort_kg_h": effective_sort,
+            "qty_per_tank": max(qty, 0),
+            "installed_supply_per_tank_kg_h": installed_supply,
+            "peak_use_pct": round(peak_use_pct, 1),
+            "excess_ratio": round(excess_ratio, 3),
+            "warning": "" if feasible else (geom_warning or "Tecnologia/modelo insuficiente ou fisicamente inadequado para este arranjo."),
+            "_score": score,
+        }
+        if best is None or score < best["_score"]:
+            best = candidate
+
+    if best is None:
+        return {
+            "technology": technology,
+            "allowed": False,
+            "feasible": False,
+            "max_units_per_tank": max_units,
+            "model": "-",
+            "qty_per_tank": 0,
+            "effective_sort_kg_h": 0.0,
+            "installed_supply_per_tank_kg_h": 0.0,
+            "warning": "Sem modelo disponível.",
+        }
+    best.pop("_score", None)
+    return best
+
+
+def _blower_capacity_kg_h(blower: dict, diffusion_eff_pct: float, altitude_factor: float, field_factor: float) -> float:
+    # 1 m3 de ar contém aproximadamente 0,275 kg de O2; aplicamos eficiência efetiva de transferência.
+    oxygen_in_air_kg_m3 = 0.275
+    return blower["airflow_m3_h"] * oxygen_in_air_kg_m3 * (diffusion_eff_pct / 100.0) * altitude_factor * field_factor
+
+
+def _default_control_strategy(technology: str) -> str:
+    if "Soprador Lobular" in technology:
+        return "Inversor de frequência"
+    if "Soprador" in technology:
+        return "Inversor de frequência"
+    if technology == "Chafariz":
+        return "Acionamento por etapas"
+    if technology == "Pás":
+        return "Acionamento por etapas"
+    return "Acionamento por etapas"
+
+
+def _recommended_control_equipment(technology: str, strategy: str) -> str:
+    if strategy == "Potência fixa no ciclo inteiro":
+        return "Sem equipamento adicional obrigatório"
+    if "Soprador Lobular" in technology:
+        return "Inversor de frequência"
+    if "Soprador Radial" in technology or technology == "Soprador":
+        return "Inversor de frequência (verificar compatibilidade) ou painel por etapas"
+    if technology == "Chafariz":
+        return "Painel de acionamento por etapas; inversor opcional se compatível"
+    if technology == "Pás":
+        return "Painel de acionamento por etapas; inversor com uso limitado"
+    return "Painel de acionamento por etapas"
+
+
+def _recommended_control_note(technology: str, strategy: str) -> str:
+    if strategy == "Potência fixa no ciclo inteiro":
+        return "Operação simples e conservadora, com maior custo energético ao longo do ciclo."
+    if "Soprador Lobular" in technology:
+        return "Tecnologia adequada para modulação progressiva de vazão de ar conforme a biomassa aumenta."
+    if "Soprador Radial" in technology or technology == "Soprador":
+        return "A modulação é possível, mas deve respeitar a faixa eficiente de operação do soprador."
+    if technology == "Chafariz":
+        return "A redução excessiva da rotação pode prejudicar lançamento d'água, circulação e incorporação de oxigênio."
+    if technology == "Pás":
+        return "A rotação muito baixa pode reduzir a eficiência hidráulica e a circulação do tanque."
+    return "Ajuste a potência conforme a biomassa cresce, preservando a segurança operacional."
+
+
+def _minimum_operational_pct(inp: DashboardProjectInput, technology: str) -> float:
+    if "Soprador" in technology:
+        return max(0.0, min(100.0, float(getattr(inp, "blower_min_operational_pct", 35.0)))) / 100.0
+    if technology == "Chafariz":
+        return max(0.0, min(100.0, float(getattr(inp, "fountain_min_operational_pct", 50.0)))) / 100.0
+    if technology == "Pás":
+        return max(0.0, min(100.0, float(getattr(inp, "paddle_min_operational_pct", 50.0)))) / 100.0
+    return 0.35
+
+
+def _phase_aeration_modulation(inp: DashboardProjectInput, feeding_plan: list[dict], fish_stocked: float, selected_aeration: dict) -> tuple[list[dict], dict]:
+    installed_supply = float(selected_aeration.get("installed_oxygen_supply_kg_h", 0.0) or 0.0)
+    installed_power_kw = float(selected_aeration.get("power_installed_kw", 0.0) or 0.0)
+    strategy_mode = getattr(inp, "aeration_power_mode", "Potência modulada por fase")
+    technology = str(selected_aeration.get("technology", "-"))
+    control_strategy = getattr(inp, "aeration_control_strategy", "Automático")
+    if control_strategy == "Automático":
+        control_strategy = _default_control_strategy(technology)
+    min_pct = _minimum_operational_pct(inp, technology)
+    oxygen_base = float(getattr(inp, "oxygen_demand_mg_per_kg_h", 550.0)) / 1_000_000.0
+    safety_factor = 1.0 + float(getattr(inp, "aeration_safety_factor_pct", 20.0)) / 100.0
+    hours_day = float(getattr(inp, "aeration_hours_per_day", 24.0))
+    energy_price = float(getattr(inp, "electricity_price_kwh", 0.45))
+    details = selected_aeration.get("details", {})
+    per_unit_supply = 0.0
+    total_units = max(1, int(selected_aeration.get("quantity_total", 0) or 0))
+    per_tank_units = max(1, int(selected_aeration.get("quantity_per_tank", 1) or 1))
+    if technology in ("Chafariz", "Pás") and isinstance(details, dict):
+        per_unit_supply = float(details.get("effective_sort_kg_h", 0.0) or 0.0)
+    elif "Soprador" in technology and isinstance(details, dict):
+        per_unit_supply = float(details.get("effective_oxygen_capacity_each_kg_h", 0.0) or 0.0)
+    rows = []
+    modulated_cost = 0.0
+    fixed_cost = installed_power_kw * hours_day * sum(float(r.get("days_in_phase", 0.0) or 0.0) for r in feeding_plan) * energy_price
+    active_power_sum_weighted = 0.0
+    total_days = 0.0
+    per_tank_power_kw = installed_power_kw / total_units if total_units > 0 else 0.0
+
+    for row in feeding_plan:
+        biomass_start = float(row.get("biomass_start_phase_kg", 0.0) or 0.0)
+        biomass_end = float(row.get("biomass_end_phase_kg", 0.0) or 0.0)
+        biomass_mean = (biomass_start + biomass_end) / 2.0
+        days_phase = float(row.get("days_in_phase", 0.0) or 0.0)
+        demand_phase = biomass_mean * oxygen_base * safety_factor
+        raw_use = (demand_phase / installed_supply) if installed_supply > 0 else 0.0
+        limited = False
+
+        if strategy_mode == "Potência fixa no ciclo inteiro":
+            use_pct = 1.0
+            active_units = total_units
+            active_power_kw = installed_power_kw
+        else:
+            if technology in ("Chafariz", "Pás"):
+                # Em tecnologias individuais por tanque, todos os equipamentos permanecem ativos;
+                # o que varia é a potência média aplicada a cada motor.
+                active_units = total_units
+                use_pct = max(min_pct, raw_use)
+                if use_pct > 1.0:
+                    use_pct = 1.0
+                    limited = True
+                active_power_kw = installed_power_kw * use_pct
+            elif control_strategy == "Acionamento por etapas" and per_unit_supply > 0 and total_units > 0:
+                active_units = max(1, math.ceil(demand_phase / per_unit_supply)) if demand_phase > 0 else 1
+                active_units = min(active_units, total_units)
+                use_pct = active_units / total_units
+                if use_pct < min_pct:
+                    use_pct = min_pct
+                    limited = True
+                active_power_kw = installed_power_kw * use_pct
+            elif control_strategy == "Híbrido" and per_unit_supply > 0 and total_units > 0:
+                active_units = max(1, math.ceil(demand_phase / per_unit_supply)) if demand_phase > 0 else 1
+                active_units = min(active_units, total_units)
+                use_pct = max(min_pct, raw_use)
+                use_pct = min(use_pct, 1.0)
+                active_power_kw = installed_power_kw * use_pct
+            else:
+                active_units = total_units
+                use_pct = max(min_pct, raw_use)
+                if use_pct > 1.0:
+                    use_pct = 1.0
+                    limited = True
+                active_power_kw = installed_power_kw * use_pct
+
+        energy_phase = active_power_kw * hours_day * days_phase
+        cost_phase = energy_phase * energy_price
+        modulated_cost += cost_phase
+        active_power_sum_weighted += active_power_kw * days_phase
+        total_days += days_phase
+        rows.append({
+            "Fase": row.get("phase_name", "-"),
+            "Biomassa média da fase (kg)": round(biomass_mean, 2),
+            "Demanda de O₂ da fase (kg/h)": round(demand_phase, 3),
+            "% de uso da capacidade": round(use_pct * 100.0, 1),
+            "Equipamentos ativos": int(active_units),
+            "Potência ativa da fase (kW)": round(active_power_kw, 2),
+            "Dias da fase": int(round(days_phase)),
+            "Custo da fase (R$)": round(cost_phase, 2),
+            "Observação": (
+                "Tecnologia individual por tanque: todos os equipamentos permanecem ativos com potência modulada."
+                if technology in ("Chafariz", "Pás")
+                else ("Ajustado ao mínimo operacional" if limited and strategy_mode != "Potência fixa no ciclo inteiro" else "")
+            ),
+        })
+    avg_power = (active_power_sum_weighted / total_days) if total_days > 0 else installed_power_kw
+    savings = fixed_cost - modulated_cost if strategy_mode != "Potência fixa no ciclo inteiro" else 0.0
+    savings_pct = (savings / fixed_cost * 100.0) if fixed_cost > 0 and strategy_mode != "Potência fixa no ciclo inteiro" else 0.0
+    summary = {
+        "strategy_mode": strategy_mode,
+        "control_strategy": control_strategy,
+        "control_equipment_recommended": _recommended_control_equipment(technology, strategy_mode),
+        "control_note": _recommended_control_note(technology, strategy_mode),
+        "cost_cycle_fixed_power": fixed_cost,
+        "cost_cycle_modulated": modulated_cost if strategy_mode != "Potência fixa no ciclo inteiro" else fixed_cost,
+        "savings_cycle_rs": savings,
+        "savings_cycle_pct": savings_pct,
+        "average_active_power_kw": avg_power,
+        "peak_installed_power_kw": installed_power_kw,
+        "all_units_always_active": technology in ("Chafariz", "Pás"),
+    }
+    return rows, summary
+
+
+def suggest_blower(
+    blower_type: str,
+    oxygen_demand_total_kg_h: float,
+    diffusion_eff_pct: float,
+    altitude_factor: float,
+    field_factor: float,
+) -> dict:
+    if blower_type == "Radial":
+        library = RADIAL_BLOWER_LIBRARY
+    elif blower_type == "Lobular":
+        library = LOBULAR_BLOWER_LIBRARY
+    else:
+        library = RADIAL_BLOWER_LIBRARY + LOBULAR_BLOWER_LIBRARY
+
+    best = None
+    for blower in library:
+        cap_each = _blower_capacity_kg_h(blower, diffusion_eff_pct, altitude_factor, field_factor)
+        qty = math.ceil(oxygen_demand_total_kg_h / cap_each) if cap_each > 0 else 99
+        total_power = blower["power_kw"] * max(qty, 0)
+        score = (total_power, qty, blower["power_kw"])
+        candidate = {
+            "technology": "Soprador",
+            "blower_family": "Radial" if blower in RADIAL_BLOWER_LIBRARY else "Lobular",
+            "model": blower["model"],
+            "power_kw_each": blower["power_kw"],
+            "airflow_m3_h_each": blower["airflow_m3_h"],
+            "pressure_mbar": blower["pressure_mbar"],
+            "qty_system": max(qty, 0),
+            "effective_oxygen_capacity_each_kg_h": cap_each,
+            "installed_supply_total_kg_h": cap_each * max(qty, 0),
+            "_score": score,
+        }
+        if best is None or score < best["_score"]:
+            best = candidate
+    best.pop("_score", None)
+    return best
 
 
 def temperature_growth_factor(temp_c: float) -> float:
@@ -78,32 +536,91 @@ def protein_growth_factor(protein_percent: float) -> float:
     return 1.08
 
 
-def round_up_to_base(value: float, base: int) -> int:
-    if base <= 1:
-        return math.ceil(value)
-    return int(math.ceil(value / base) * base)
+def pellet_recommendation_text(start_g: float, end_g: float, pellet_mm: float) -> str:
+    if end_g <= 20.0:
+        return "1,0–1,5 mm"
+    if end_g <= 250.0:
+        return "2,0–4,0 mm"
+    if end_g <= 650.0:
+        return "4,0–6,0 mm"
+    if end_g <= 1000.0:
+        return "6,0–8,0 mm"
+    return "8,0 mm"
 
 
-def resolve_fingerling_purchase_quantity(inp: DashboardProjectInput, theoretical_quantity: float) -> int:
-    rounding_mode = getattr(inp, "fingerling_rounding_mode", "Arredondar para cima")
-    rounding_base = max(int(getattr(inp, "fingerling_rounding_base", 1000)), 1)
-    if rounding_mode == "Arredondar para cima":
-        return round_up_to_base(theoretical_quantity, rounding_base)
-    return int(round(theoretical_quantity))
+def growth_curve_adjustment_factor(inp: DashboardProjectInput) -> float:
+    adj = getattr(inp, "growth_curve_adjustment_pct", 100.0)
+    try:
+        adj = float(adj) / 100.0
+    except (TypeError, ValueError):
+        adj = 1.0
+    return max(0.8, min(adj, 1.2))
+
+
+def growth_segments(inp: DashboardProjectInput, fish_stocked: float) -> tuple[list[dict], list[dict], float]:
+    temp_factor = temperature_growth_factor(inp.water_temperature_c)
+    adjust_factor = growth_curve_adjustment_factor(inp)
+
+    segments: list[dict] = []
+    growth_curve: list[dict] = []
+    current_day = 0.0
+
+    growth_curve.append({
+        "day": 0.0,
+        "weight_g": inp.initial_weight_g,
+        "biomass_kg": fish_stocked * (inp.initial_weight_g / 1000.0),
+    })
+
+    for band in GROWTH_SUBRANGES_V2:
+        start_g = max(inp.initial_weight_g, band["min_g"])
+        end_g = min(inp.target_weight_g, band["max_g"])
+        if end_g <= start_g:
+            continue
+
+        daily_gain = band["daily_gain_28_g"] * temp_factor * adjust_factor
+        daily_gain = max(daily_gain, 0.05)
+        exact_days = (end_g - start_g) / daily_gain
+
+        current_day += exact_days
+        biomass_end = fish_stocked * (end_g / 1000.0)
+
+        segments.append({
+            "label": band["label"],
+            "start_g": start_g,
+            "end_g": end_g,
+            "daily_gain_g": daily_gain,
+            "days": exact_days,
+            "evidence": band["evidence"],
+        })
+        growth_curve.append({
+            "day": current_day,
+            "weight_g": end_g,
+            "biomass_kg": biomass_end,
+        })
+
+    return segments, growth_curve, current_day
+
+
+def days_between_weights(start_g: float, end_g: float, segments: list[dict]) -> float:
+    total_days = 0.0
+    for seg in segments:
+        overlap_start = max(start_g, seg["start_g"])
+        overlap_end = min(end_g, seg["end_g"])
+        if overlap_end <= overlap_start:
+            continue
+        total_days += (overlap_end - overlap_start) / seg["daily_gain_g"]
+    return total_days
 
 
 def adjusted_daily_growth_g(inp: DashboardProjectInput) -> float:
-    proteins = [
-        inp.phase1_protein_percent,
-        inp.phase2_protein_percent,
-        inp.phase3_protein_percent,
-        inp.phase4_protein_percent,
-    ]
-    avg_factor = sum(protein_growth_factor(p) for p in proteins) / len(proteins)
-    return max(
-        inp.base_daily_growth_g * temperature_growth_factor(inp.water_temperature_c) * avg_factor,
-        0.1,
-    )
+    relevant = []
+    for band in GROWTH_SUBRANGES_V2:
+        start_g = max(inp.initial_weight_g, band["min_g"])
+        end_g = min(inp.target_weight_g, band["max_g"])
+        if end_g <= start_g:
+            continue
+        relevant.append(band["daily_gain_28_g"] * temperature_growth_factor(inp.water_temperature_c) * growth_curve_adjustment_factor(inp))
+    return sum(relevant) / len(relevant) if relevant else 0.0
 
 
 def phase_rows(inp: DashboardProjectInput) -> list[dict]:
@@ -152,23 +669,30 @@ def phase_rows(inp: DashboardProjectInput) -> list[dict]:
             "feed_price_per_kg": inp.phase4_feed_price_per_kg,
             "phase_fcr": inp.phase4_fcr,
         },
+        {
+            "phase_name": "Fase 5",
+            "min_g": inp.phase5_min_g,
+            "max_g": inp.phase5_max_g,
+            "feeding_rate_percent": inp.phase5_feeding_rate_percent,
+            "meals_per_day": inp.phase5_meals_per_day,
+            "protein_percent": inp.phase5_protein_percent,
+            "pellet_mm": inp.phase5_pellet_mm,
+            "feed_price_per_kg": inp.phase5_feed_price_per_kg,
+            "phase_fcr": inp.phase5_fcr,
+        },
     ]
 
 
 def build_feeding_plan(
     inp: DashboardProjectInput,
     fish_stocked: float,
-) -> tuple[list[dict], list[dict], list[dict], float, float]:
+) -> tuple[list[dict], list[dict], list[dict], float, float, list[dict]]:
     feeding_plan: list[dict] = []
-    growth_curve: list[dict] = []
     cost_curve: list[dict] = []
-
-    temp_factor = temperature_growth_factor(inp.water_temperature_c)
-
-    total_days = 0.0
     total_feed_kg = 0.0
     cumulative_feed_cost = 0.0
-    current_day = 0.0
+
+    segments, growth_curve, cycle_days = growth_segments(inp, fish_stocked)
 
     for phase in phase_rows(inp):
         start_g = max(inp.initial_weight_g, phase["min_g"])
@@ -177,15 +701,7 @@ def build_feeding_plan(
         if end_g <= start_g:
             continue
 
-        phase_growth_g_day = max(
-            inp.base_daily_growth_g
-            * temp_factor
-            * protein_growth_factor(phase["protein_percent"]),
-            0.1,
-        )
-
-        exact_phase_days = (end_g - start_g) / phase_growth_g_day
-        phase_days = max(1, math.ceil(exact_phase_days))
+        phase_days = max(1, round(days_between_weights(start_g, end_g, segments)))
 
         biomass_start = fish_stocked * (start_g / 1000.0)
         biomass_end = fish_stocked * (end_g / 1000.0)
@@ -197,53 +713,43 @@ def build_feeding_plan(
 
         total_feed_kg += feed_phase
         cumulative_feed_cost += cost_phase
-        total_days += phase_days
 
-        growth_curve.append(
-            {
-                "day": current_day,
-                "weight_g": start_g,
-                "biomass_kg": biomass_start,
-            }
-        )
+        curve_day = days_between_weights(inp.initial_weight_g, end_g, segments)
+        cost_curve.append({
+            "day": curve_day,
+            "cumulative_feed_cost": cumulative_feed_cost,
+        })
 
-        current_day += phase_days
+        cumulative_days_end = curve_day
+        cumulative_days_start = max(cumulative_days_end - phase_days, 0.0)
+        cycle_share_pct = (phase_days / cycle_days * 100.0) if cycle_days > 0 else 0.0
 
-        growth_curve.append(
-            {
-                "day": current_day,
-                "weight_g": end_g,
-                "biomass_kg": biomass_end,
-            }
-        )
+        feeding_plan.append({
+            "phase_name": phase["phase_name"],
+            "weight_range": f"{start_g:.0f}-{end_g:.0f} g",
+            "start_weight_g": start_g,
+            "end_weight_g": end_g,
+            "biomass_start_phase_kg": biomass_start,
+            "biomass_end_phase_kg": biomass_end,
+            "days_in_phase": phase_days,
+            "days_in_phase_exact": days_between_weights(start_g, end_g, segments),
+            "cumulative_days_start": cumulative_days_start,
+            "cumulative_days_end": cumulative_days_end,
+            "cycle_share_pct": cycle_share_pct,
+            "feeding_rate_percent": phase["feeding_rate_percent"],
+            "meals_per_day": phase["meals_per_day"],
+            "protein_percent": phase["protein_percent"],
+            "pellet_mm": phase["pellet_mm"],
+            "pellet_recommendation": pellet_recommendation_text(start_g, end_g, phase["pellet_mm"]),
+            "feed_price_per_kg": phase["feed_price_per_kg"],
+            "phase_fcr": phase_fcr,
+            "biomass_gain_phase_kg": biomass_gain,
+            "feed_phase_kg": feed_phase,
+            "feed_phase_cost": cost_phase,
+            "phase_daily_growth_g": biomass_gain * 1000 / fish_stocked / phase_days if fish_stocked > 0 and phase_days > 0 else 0.0,
+        })
 
-        cost_curve.append(
-            {
-                "day": current_day,
-                "cumulative_feed_cost": cumulative_feed_cost,
-            }
-        )
-
-        feeding_plan.append(
-            {
-                "phase_name": phase["phase_name"],
-                "weight_range": f"{start_g:.0f}-{end_g:.0f} g",
-                "days_in_phase": phase_days,
-                "feeding_rate_percent": phase["feeding_rate_percent"],
-                "meals_per_day": phase["meals_per_day"],
-                "protein_percent": phase["protein_percent"],
-                "pellet_mm": phase["pellet_mm"],
-                "feed_price_per_kg": phase["feed_price_per_kg"],
-                "phase_fcr": phase_fcr,
-                "biomass_gain_phase_kg": biomass_gain,
-                "feed_phase_kg": feed_phase,
-                "feed_phase_cost": cost_phase,
-                "phase_daily_growth_g": phase_growth_g_day,
-            }
-        )
-
-    return feeding_plan, growth_curve, cost_curve, total_days, total_feed_kg
-
+    return feeding_plan, growth_curve, cost_curve, cycle_days, total_feed_kg, segments
 
 
 def build_production_schedule(
@@ -258,62 +764,77 @@ def build_production_schedule(
     revenue_year: float,
     fingerling_cost_cycle: float,
     fingerling_cost_year: float,
-    fingerlings_purchase_cycle: int,
 ) -> dict:
     strategy = getattr(inp, "production_strategy", "Ciclos simultâneos")
-    batch_mode = getattr(inp, "production_batch_mode", "Automático")
-    harvest_interval_months = max(getattr(inp, "harvest_interval_months", 1.0), 0.25)
-    harvest_interval_days = harvest_interval_months * 30.0
+    basis = getattr(inp, "scheduling_basis", "Intervalo entre despescas")
+    cycle_months = cycle_days / 30.44 if cycle_days else 0.0
 
-    annual_stocking = fish_stocked_per_cycle * inp.cycles_per_year
-    annual_fingerling_purchase = fingerlings_purchase_cycle * inp.cycles_per_year
-    automatic_parallel_batches = max(1, math.ceil(cycle_days / harvest_interval_days)) if harvest_interval_days > 0 else 1
-
-    if strategy == "Escalonada":
-        if batch_mode == "Personalizado":
-            batches_in_parallel = max(1, int(getattr(inp, "manual_parallel_batches", automatic_parallel_batches)))
-        else:
-            batches_in_parallel = automatic_parallel_batches
-
-        harvests_per_year = max(1.0, 12.0 / harvest_interval_months)
-        units_per_batch_exact = inp.number_of_units / batches_in_parallel
-
-        low_units = math.floor(units_per_batch_exact)
-        high_units = math.ceil(units_per_batch_exact)
-
-        if abs(units_per_batch_exact - round(units_per_batch_exact)) < 1e-9:
-            batch_distribution_note = f"{int(round(units_per_batch_exact))} tanque(s) por lote."
-        else:
-            high_group_count = inp.number_of_units - (low_units * batches_in_parallel)
-            low_group_count = batches_in_parallel - high_group_count
-            parts = []
-            if high_group_count > 0:
-                parts.append(f"{int(high_group_count)} lote(s) com {int(high_units)} tanque(s)")
-            if low_group_count > 0:
-                parts.append(f"{int(low_group_count)} lote(s) com {int(low_units)} tanque(s)")
-            batch_distribution_note = "; ".join(parts) + "."
-
-        production_per_harvest_kg = production_per_year_kg / harvests_per_year
-        feed_per_harvest_kg = feed_consumption_year_kg / harvests_per_year
-        revenue_per_harvest = revenue_year / harvests_per_year
-        fingerling_cost_per_harvest = fingerling_cost_year / harvests_per_year
-    else:
+    if strategy == "Ciclos simultâneos":
         batches_in_parallel = 1
-        harvests_per_year = inp.cycles_per_year
+        harvest_interval_months = cycle_months
         units_per_batch_exact = float(inp.number_of_units)
-        batch_distribution_note = f"{int(inp.number_of_units)} tanque(s) em um único lote por ciclo."
-        production_per_harvest_kg = production_per_cycle_kg
-        feed_per_harvest_kg = feed_consumption_cycle_kg
-        revenue_per_harvest = revenue_cycle
-        fingerling_cost_per_harvest = fingerling_cost_cycle
+        suggested_units = inp.number_of_units
+        status = "Operação simultânea"
+        recommendation = "Todos os tanques entram e saem juntos."
+    else:
+        if basis == "Intervalo entre despescas":
+            harvest_interval_months = max(getattr(inp, "harvest_interval_months", 1.0), 0.25)
+            batches_in_parallel = max(1, math.ceil(cycle_months / harvest_interval_months)) if harvest_interval_months > 0 else 1
+            units_per_batch_exact = 1.0
+            suggested_units = batches_in_parallel
+            if inp.number_of_units < suggested_units:
+                status = "Insuficiente para a meta informada"
+                recommendation = f"Para despescas a cada {harvest_interval_months:.2f} mês(es), o sistema sugere pelo menos {suggested_units} tanque(s)."
+            elif inp.number_of_units == suggested_units:
+                status = "Compatível com a meta"
+                recommendation = "O número informado de tanques atende a meta de despescas."
+            else:
+                status = "Com folga operacional"
+                recommendation = "Há folga operacional em relação à meta de despescas informada."
+        elif basis == "Número de lotes":
+            batches_in_parallel = max(1, int(getattr(inp, "manual_parallel_batches", 1)))
+            harvest_interval_months = cycle_months / batches_in_parallel if batches_in_parallel > 0 else cycle_months
+            units_per_batch_exact = inp.number_of_units / batches_in_parallel if batches_in_parallel > 0 else float(inp.number_of_units)
+            suggested_units = batches_in_parallel
+            status = "Escalonamento por número de lotes"
+            recommendation = "Revise se a quantidade de tanques por lote ficou operacionalmente coerente."
+        else:
+            desired_units_per_batch = max(1, int(getattr(inp, "desired_units_per_batch", 1)))
+            batches_in_parallel = max(1, math.floor(inp.number_of_units / desired_units_per_batch))
+            harvest_interval_months = cycle_months / batches_in_parallel if batches_in_parallel > 0 else cycle_months
+            units_per_batch_exact = float(desired_units_per_batch)
+            suggested_units = batches_in_parallel * desired_units_per_batch
+            status = "Escalonamento por tanques por lote"
+            recommendation = "Revise se o número de lotes formado atende à frequência desejada de despescas."
+
+    harvests_per_year_stable = 12.0 / harvest_interval_months if harvest_interval_months > 0 else 0.0
+    production_per_harvest_kg = production_per_year_kg / harvests_per_year_stable if harvests_per_year_stable > 0 else production_per_cycle_kg
+    feed_per_harvest_kg = feed_consumption_year_kg / harvests_per_year_stable if harvests_per_year_stable > 0 else feed_consumption_cycle_kg
+    revenue_per_harvest = revenue_year / harvests_per_year_stable if harvests_per_year_stable > 0 else revenue_cycle
+    fingerling_cost_per_harvest = fingerling_cost_year / harvests_per_year_stable if harvests_per_year_stable > 0 else fingerling_cost_cycle
+
+    # Ano 1: considera a lacuna até a primeira despesca.
+    warmup_months = cycle_months
+    remaining_months_year1 = max(12.0 - warmup_months, 0.0)
+    harvests_year1 = max(0, math.floor(remaining_months_year1 / harvest_interval_months)) if strategy == "Escalonada" and harvest_interval_months > 0 else (1 if cycle_months <= 12 else 0)
+    production_year1_kg = production_per_harvest_kg * harvests_year1
+    revenue_year1 = revenue_per_harvest * harvests_year1
+    feed_year1_kg = feed_per_harvest_kg * harvests_year1
+
+    batch_distribution_note = ""
+    if strategy == "Escalonada" and basis == "Intervalo entre despescas":
+        batch_distribution_note = f"Com {inp.number_of_units} tanque(s) e intervalo de {harvest_interval_months:.2f} mês(es), o sistema trabalha com {batches_in_parallel} lote(s) em paralelo; a primeira receita ocorre apenas após o fechamento do ciclo biológico inicial."
 
     return {
         "production_strategy": strategy,
-        "production_batch_mode": batch_mode,
-        "automatic_parallel_batches": automatic_parallel_batches,
+        "scheduling_basis": basis,
+        "biological_cycle_days": cycle_days,
+        "biological_cycle_months": cycle_months,
+        "warmup_months_without_revenue": warmup_months,
         "harvest_interval_months": harvest_interval_months,
-        "harvest_interval_days": harvest_interval_days,
-        "harvests_per_year": harvests_per_year,
+        "harvest_interval_days": harvest_interval_months * 30.44,
+        "harvests_per_year": harvests_per_year_stable,
+        "harvests_year1": harvests_year1,
         "batches_in_parallel": batches_in_parallel,
         "units_per_batch_exact": units_per_batch_exact,
         "batch_volume_m3": units_per_batch_exact * inp.unit_volume_m3,
@@ -321,32 +842,37 @@ def build_production_schedule(
         "feed_per_harvest_kg": feed_per_harvest_kg,
         "revenue_per_harvest": revenue_per_harvest,
         "fingerling_cost_per_harvest": fingerling_cost_per_harvest,
-        "fish_stocked_per_harvest": annual_stocking / harvests_per_year if harvests_per_year > 0 else 0.0,
-        "fingerlings_purchase_per_harvest": round_up_to_base(annual_fingerling_purchase / harvests_per_year, max(int(getattr(inp, "fingerling_rounding_base", 1000)), 1)) if getattr(inp, "fingerling_rounding_mode", "Arredondar para cima") == "Arredondar para cima" and harvests_per_year > 0 else int(round(annual_fingerling_purchase / harvests_per_year)) if harvests_per_year > 0 else 0,
+        "fish_stocked_per_harvest": fish_stocked_per_cycle,
         "first_harvest_after_days": cycle_days,
-        "first_harvest_after_months": cycle_days / 30.0 if cycle_days else 0.0,
+        "first_harvest_after_months": cycle_months,
+        "production_year1_kg": production_year1_kg,
+        "revenue_year1": revenue_year1,
+        "feed_year1_kg": feed_year1_kg,
+        "minimum_units_suggested": suggested_units,
+        "status": status,
+        "recommendation": recommendation,
+        "actual_interval_months_with_informed_units": (cycle_months / max(inp.number_of_units, 1)) if strategy == "Escalonada" and basis == "Intervalo entre despescas" else harvest_interval_months,
         "batch_distribution_note": batch_distribution_note,
     }
-
 
 
 def resolve_economic_costs(inp: DashboardProjectInput) -> dict:
     economic_model_mode = getattr(inp, "economic_model_mode", "Simplificado")
 
     if economic_model_mode == "Fixo + por tanque":
-        electricity_fixed = getattr(inp, "electricity_cost_fixed_cycle", 0.0)
-        electricity_variable = getattr(inp, "electricity_cost_per_unit_cycle", 0.0) * inp.number_of_units
-        labor_fixed = getattr(inp, "labor_cost_fixed_cycle", 0.0)
-        labor_variable = getattr(inp, "labor_cost_per_unit_cycle", 0.0) * inp.number_of_units
-        other_fixed = getattr(inp, "other_cost_fixed_cycle", 0.0)
-        other_variable = getattr(inp, "other_cost_per_unit_cycle", 0.0) * inp.number_of_units
-        capex_fixed = getattr(inp, "capex_fixed_total", 0.0)
-        capex_variable = getattr(inp, "capex_per_unit", 0.0) * inp.number_of_units
+        electricity_fixed = float(getattr(inp, "electricity_cost_fixed_cycle", 0.0))
+        electricity_variable = float(getattr(inp, "electricity_cost_per_unit_cycle", 0.0)) * inp.number_of_units
+        labor_fixed = float(getattr(inp, "labor_cost_fixed_cycle", 0.0))
+        labor_variable = float(getattr(inp, "labor_cost_per_unit_cycle", 0.0)) * inp.number_of_units
+        other_fixed = float(getattr(inp, "other_cost_fixed_cycle", 0.0))
+        other_variable = float(getattr(inp, "other_cost_per_unit_cycle", 0.0)) * inp.number_of_units
+        capex_fixed = float(getattr(inp, "capex_fixed_total", 0.0))
+        capex_variable = float(getattr(inp, "capex_per_unit", 0.0)) * inp.number_of_units
 
         return {
             "economic_model_mode": economic_model_mode,
-            "cost_scaling_mode": getattr(inp, "cost_scaling_mode", "Fixos (não escalar)"),
-            "cost_reference_units": max(getattr(inp, "cost_reference_units", max(inp.number_of_units, 1)), 1),
+            "cost_scaling_mode": "Fixos (não escalar)",
+            "cost_reference_units": max(inp.number_of_units, 1),
             "cost_scale_factor": 1.0,
             "electricity_cost_cycle_effective": electricity_fixed + electricity_variable,
             "labor_cost_cycle_effective": labor_fixed + labor_variable,
@@ -362,16 +888,36 @@ def resolve_economic_costs(inp: DashboardProjectInput) -> dict:
             "capex_variable_total_effective": capex_variable,
         }
 
-    cost_reference_units = max(getattr(inp, "cost_reference_units", max(inp.number_of_units, 1)), 1)
+    if economic_model_mode == "Manual (CAPEX total)":
+        return {
+            "economic_model_mode": economic_model_mode,
+            "cost_scaling_mode": "Fixos (não escalar)",
+            "cost_reference_units": max(inp.number_of_units, 1),
+            "cost_scale_factor": 1.0,
+            "electricity_cost_cycle_effective": float(inp.electricity_cost_cycle),
+            "labor_cost_cycle_effective": float(inp.labor_cost_cycle),
+            "other_costs_cycle_effective": float(inp.other_costs_cycle),
+            "capex_total_effective": float(inp.capex_total),
+            "electricity_cost_fixed_cycle_effective": float(inp.electricity_cost_cycle),
+            "electricity_cost_variable_cycle_effective": 0.0,
+            "labor_cost_fixed_cycle_effective": float(inp.labor_cost_cycle),
+            "labor_cost_variable_cycle_effective": 0.0,
+            "other_cost_fixed_cycle_effective": float(inp.other_costs_cycle),
+            "other_cost_variable_cycle_effective": 0.0,
+            "capex_fixed_total_effective": float(inp.capex_total),
+            "capex_variable_total_effective": 0.0,
+        }
+
+    cost_reference_units = max(int(getattr(inp, "cost_reference_units", max(inp.number_of_units, 1))), 1)
     if getattr(inp, "cost_scaling_mode", "Fixos (não escalar)") == "Escalonar pelo nº de tanques":
         cost_scale_factor = inp.number_of_units / cost_reference_units
     else:
         cost_scale_factor = 1.0
 
-    electricity_cost_cycle_effective = inp.electricity_cost_cycle * cost_scale_factor
-    labor_cost_cycle_effective = inp.labor_cost_cycle * cost_scale_factor
-    other_costs_cycle_effective = inp.other_costs_cycle * cost_scale_factor
-    capex_total_effective = inp.capex_total * cost_scale_factor
+    electricity_cost_cycle_effective = float(inp.electricity_cost_cycle) * cost_scale_factor
+    labor_cost_cycle_effective = float(inp.labor_cost_cycle) * cost_scale_factor
+    other_costs_cycle_effective = float(inp.other_costs_cycle) * cost_scale_factor
+    capex_total_effective = float(inp.capex_total) * cost_scale_factor
 
     return {
         "economic_model_mode": economic_model_mode,
@@ -394,66 +940,166 @@ def resolve_economic_costs(inp: DashboardProjectInput) -> dict:
 
 
 
+
 def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
-    total_volume_m3 = inp.number_of_units * inp.unit_volume_m3
+    geometry = compute_geometry(inp)
+    inp.unit_volume_m3 = geometry["unit_volume_m3"]
+
+    total_volume_m3 = inp.number_of_units * geometry["unit_volume_m3"]
     final_biomass_total_kg = total_volume_m3 * inp.density_kg_m3
+    final_biomass_per_tank_kg = geometry["unit_volume_m3"] * inp.density_kg_m3
 
     target_weight_kg = inp.target_weight_g / 1000.0
     fish_harvested = final_biomass_total_kg / target_weight_kg if target_weight_kg > 0 else 0.0
-    fish_stocked_theoretical = fish_harvested / inp.survival_rate if inp.survival_rate > 0 else 0.0
-    fingerlings_purchase_cycle = resolve_fingerling_purchase_quantity(inp, fish_stocked_theoretical)
-    fish_stocked = fish_stocked_theoretical
+    fish_stocked = fish_harvested / inp.survival_rate if inp.survival_rate > 0 else 0.0
+    fish_stocked_per_tank = fish_stocked / max(inp.number_of_units, 1)
+    fish_harvested_per_tank = fish_harvested / max(inp.number_of_units, 1)
 
-    feeding_plan, growth_curve, cost_curve, cycle_days, feed_consumption_cycle_kg = build_feeding_plan(
+    feeding_plan, growth_curve, cost_curve, cycle_days, feed_consumption_cycle_kg, growth_segments_used = build_feeding_plan(
         inp,
         fish_stocked,
     )
 
+    # ciclos/ano passam a ser consequência da base biológica
+    cycles_per_year_effective = 365.0 / cycle_days if cycle_days > 0 else 0.0
     revenue_cycle = final_biomass_total_kg * inp.sale_price_per_kg
 
-    oxygen_demand_kg_h = final_biomass_total_kg * (inp.oxygen_demand_mg_per_kg_h / 1_000_000.0)
+    safety_factor = 1.0 + (getattr(inp, "aeration_safety_factor_pct", 20.0) / 100.0)
+    oxygen_demand_kg_h = final_biomass_total_kg * (inp.oxygen_demand_mg_per_kg_h / 1_000_000.0) * safety_factor
+    oxygen_demand_per_tank_kg_h = final_biomass_per_tank_kg * (inp.oxygen_demand_mg_per_kg_h / 1_000_000.0) * safety_factor
 
-    aerator_capacity_each = inp.aerator_hp_each * inp.oxygen_transfer_kg_o2_hp_h
+    altitude_factor = altitude_transfer_factor(getattr(inp, "site_altitude_m", 0.0))
+    temp_aeration_factor = surface_aeration_base_factor(inp.water_temperature_c)
+    field_factor = max(min(getattr(inp, "field_efficiency_pct", 85.0) / 100.0, 1.0), 0.1)
 
-    auto_required_aerators = (
-        math.ceil(oxygen_demand_kg_h / aerator_capacity_each)
-        if aerator_capacity_each > 0
-        else 0
-    )
+    aeration_mode = getattr(inp, "aeration_mode", "Automático")
+    automatic_tech = getattr(inp, "automatic_aeration_technology", "Chafariz")
+    blower_type = getattr(inp, "blower_type", "Automático")
 
-    if inp.aerator_quantity_mode == "Manual":
-        required_aerators = max(1, int(inp.manual_aerators))
+    suggested_fountain = suggest_surface_aerator("Chafariz", inp.system_type, oxygen_demand_per_tank_kg_h, temp_aeration_factor, altitude_factor, field_factor, geometry)
+    suggested_paddle = suggest_surface_aerator("Pás", inp.system_type, oxygen_demand_per_tank_kg_h, temp_aeration_factor, altitude_factor, field_factor, geometry)
+    suggested_blower = suggest_blower(blower_type if blower_type in ("Radial", "Lobular") else "Automático", oxygen_demand_kg_h, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+
+    selected_aeration = {
+        "mode": aeration_mode,
+        "technology": automatic_tech if aeration_mode == "Automático" else "Manual",
+        "model": "-",
+        "quantity_total": 0,
+        "installed_oxygen_supply_kg_h": 0.0,
+        "aeration_energy_cost_cycle": 0.0,
+        "power_installed_kw": 0.0,
+        "compatibility_warning": "",
+        "details": {},
+    }
+
+    if aeration_mode == "Automático":
+        if automatic_tech == "Chafariz":
+            chosen = suggested_fountain
+            total_qty = chosen["qty_per_tank"] * inp.number_of_units
+            supply = chosen["installed_supply_per_tank_kg_h"] * inp.number_of_units
+            power_kw = chosen["consumption_kwh_each"] * total_qty
+            selected_aeration.update({
+                "technology": "Chafariz",
+                "model": chosen["model"],
+                "quantity_total": total_qty,
+                "installed_oxygen_supply_kg_h": supply,
+                "power_installed_kw": power_kw,
+                "compatibility_warning": chosen["warning"],
+                "details": chosen,
+            })
+        elif automatic_tech == "Pás":
+            chosen = suggested_paddle
+            total_qty = chosen["qty_per_tank"] * inp.number_of_units
+            supply = chosen["installed_supply_per_tank_kg_h"] * inp.number_of_units
+            power_kw = chosen["consumption_kwh_each"] * total_qty
+            selected_aeration.update({
+                "technology": "Pás",
+                "model": chosen["model"],
+                "quantity_total": total_qty,
+                "installed_oxygen_supply_kg_h": supply,
+                "power_installed_kw": power_kw,
+                "compatibility_warning": chosen["warning"],
+                "details": chosen,
+            })
+        else:
+            chosen = suggested_blower
+            total_qty = chosen["qty_system"]
+            supply = chosen["installed_supply_total_kg_h"]
+            power_kw = chosen["power_kw_each"] * total_qty
+            selected_aeration.update({
+                "technology": f"Soprador {chosen['blower_family']}",
+                "model": chosen["model"],
+                "quantity_total": total_qty,
+                "installed_oxygen_supply_kg_h": supply,
+                "power_installed_kw": power_kw,
+                "details": chosen,
+            })
     else:
-        required_aerators = auto_required_aerators
+        total_supply = 0.0
+        total_power_kw = 0.0
+        total_qty = 0
+        detail_rows = []
 
-    fingerling_cost_cycle = fingerlings_purchase_cycle * inp.fingerling_price
+        if getattr(inp, "manual_use_fountain", False):
+            equipment = next((e for e in FOUNTAIN_LIBRARY if e["model"] == getattr(inp, "manual_fountain_model", "")), FOUNTAIN_LIBRARY[0])
+            qty = max(0, int(getattr(inp, "manual_fountain_qty", 0)))
+            eff_sort = _surface_effective_sort(equipment, temp_aeration_factor, altitude_factor, field_factor)
+            total_supply += eff_sort * qty
+            total_power_kw += equipment["consumption_kwh"] * qty
+            total_qty += qty
+            detail_rows.append({"tecnologia": "Chafariz", "modelo": equipment["model"], "quantidade": qty})
 
-    aeration_energy_cost_cycle = (
-        required_aerators
-        * inp.aerator_hp_each
-        * 0.746
-        * inp.aeration_hours_per_day
-        * cycle_days
-        * inp.electricity_price_kwh
-    )
+        if getattr(inp, "manual_use_paddlewheel", False):
+            equipment = next((e for e in PADDLEWHEEL_LIBRARY if e["model"] == getattr(inp, "manual_paddle_model", "")), PADDLEWHEEL_LIBRARY[0])
+            qty = max(0, int(getattr(inp, "manual_paddle_qty", 0)))
+            eff_sort = _surface_effective_sort(equipment, temp_aeration_factor, altitude_factor, field_factor)
+            total_supply += eff_sort * qty
+            total_power_kw += equipment["consumption_kwh"] * qty
+            total_qty += qty
+            detail_rows.append({"tecnologia": "Pás", "modelo": equipment["model"], "quantidade": qty})
+
+        if getattr(inp, "manual_use_radial", False):
+            equipment = next((e for e in RADIAL_BLOWER_LIBRARY if e["model"] == getattr(inp, "manual_radial_model", "")), RADIAL_BLOWER_LIBRARY[0])
+            qty = max(0, int(getattr(inp, "manual_radial_qty", 0)))
+            cap_each = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+            total_supply += cap_each * qty
+            total_power_kw += equipment["power_kw"] * qty
+            total_qty += qty
+            detail_rows.append({"tecnologia": "Soprador radial", "modelo": equipment["model"], "quantidade": qty})
+
+        if getattr(inp, "manual_use_lobular", False):
+            equipment = next((e for e in LOBULAR_BLOWER_LIBRARY if e["model"] == getattr(inp, "manual_lobular_model", "")), LOBULAR_BLOWER_LIBRARY[0])
+            qty = max(0, int(getattr(inp, "manual_lobular_qty", 0)))
+            cap_each = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+            total_supply += cap_each * qty
+            total_power_kw += equipment["power_kw"] * qty
+            total_qty += qty
+            detail_rows.append({"tecnologia": "Soprador lobular", "modelo": equipment["model"], "quantidade": qty})
+
+        selected_aeration.update({
+            "technology": "Configuração manual",
+            "model": "Múltiplos" if len(detail_rows) > 1 else (detail_rows[0]["modelo"] if detail_rows else "-"),
+            "quantity_total": total_qty,
+            "installed_oxygen_supply_kg_h": total_supply,
+            "power_installed_kw": total_power_kw,
+            "details": {"rows": detail_rows},
+            "compatibility_warning": "" if total_supply >= oxygen_demand_kg_h else "A soma dos equipamentos manuais não atende a demanda estimada do sistema.",
+        })
+
+    aeration_phase_operation, aeration_modulation_summary = _phase_aeration_modulation(inp, feeding_plan, fish_stocked, selected_aeration)
+    aeration_energy_cost_cycle = aeration_modulation_summary["cost_cycle_modulated"]
+
+    fingerling_cost_cycle = fish_stocked * inp.fingerling_price
+    feed_cost_cycle = sum(item["feed_phase_cost"] for item in feeding_plan)
 
     economic_costs = resolve_economic_costs(inp)
-
-    cost_reference_units = economic_costs["cost_reference_units"]
-    cost_scale_factor = economic_costs["cost_scale_factor"]
-    electricity_cost_cycle_effective = economic_costs["electricity_cost_cycle_effective"]
-    labor_cost_cycle_effective = economic_costs["labor_cost_cycle_effective"]
-    other_costs_cycle_effective = economic_costs["other_costs_cycle_effective"]
-    capex_total_effective = economic_costs["capex_total_effective"]
-
-    feed_cost_cycle = sum(item["feed_phase_cost"] for item in feeding_plan)
 
     opex_cycle = (
         feed_cost_cycle
         + fingerling_cost_cycle
-        + electricity_cost_cycle_effective
-        + labor_cost_cycle_effective
-        + other_costs_cycle_effective
+        + economic_costs["electricity_cost_cycle_effective"]
+        + economic_costs["labor_cost_cycle_effective"]
+        + economic_costs["other_costs_cycle_effective"]
         + aeration_energy_cost_cycle
     )
 
@@ -461,6 +1107,7 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
 
     biomass_initial = fish_stocked * (inp.initial_weight_g / 1000.0)
     biomass_gain = max(final_biomass_total_kg - biomass_initial, 0.0)
+    biomass_gain_planned = sum(item.get("biomass_gain_phase_kg", 0.0) for item in feeding_plan)
 
     implied_fcr = (
         feed_consumption_cycle_kg / biomass_gain
@@ -468,17 +1115,14 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         else None
     )
 
-    production_per_year_kg = final_biomass_total_kg * inp.cycles_per_year
-    feed_consumption_year_kg = feed_consumption_cycle_kg * inp.cycles_per_year
-    feed_cost_year = feed_cost_cycle * inp.cycles_per_year
-    revenue_year = revenue_cycle * inp.cycles_per_year
-    gross_margin_year = gross_margin_cycle * inp.cycles_per_year
-    opex_year = opex_cycle * inp.cycles_per_year
-    fingerling_cost_year = fingerling_cost_cycle * inp.cycles_per_year
-    aeration_energy_cost_year = aeration_energy_cost_cycle * inp.cycles_per_year
-    electricity_cost_year = electricity_cost_cycle_effective * inp.cycles_per_year
-    labor_cost_year = labor_cost_cycle_effective * inp.cycles_per_year
-    other_costs_year = other_costs_cycle_effective * inp.cycles_per_year
+    production_per_year_kg = final_biomass_total_kg * cycles_per_year_effective
+    feed_consumption_year_kg = feed_consumption_cycle_kg * cycles_per_year_effective
+    feed_cost_year = feed_cost_cycle * cycles_per_year_effective
+    revenue_year = revenue_cycle * cycles_per_year_effective
+    gross_margin_year = gross_margin_cycle * cycles_per_year_effective
+    opex_year = opex_cycle * cycles_per_year_effective
+    fingerling_cost_year = fingerling_cost_cycle * cycles_per_year_effective
+    aeration_energy_cost_year = aeration_energy_cost_cycle * cycles_per_year_effective
 
     production_schedule = build_production_schedule(
         inp=inp,
@@ -487,31 +1131,34 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         production_per_year_kg=production_per_year_kg,
         feed_consumption_cycle_kg=feed_consumption_cycle_kg,
         feed_consumption_year_kg=feed_consumption_year_kg,
-        fish_stocked_per_cycle=fish_stocked,
+        fish_stocked_per_cycle=fish_stocked_per_tank,
         revenue_cycle=revenue_cycle,
         revenue_year=revenue_year,
         fingerling_cost_cycle=fingerling_cost_cycle,
         fingerling_cost_year=fingerling_cost_year,
-        fingerlings_purchase_cycle=fingerlings_purchase_cycle,
     )
 
     base = {
         "scenario": "Base",
         "input": asdict(inp),
 
+        "geometry": geometry,
         "total_volume_m3": total_volume_m3,
+        "surface_area_per_unit_m2": geometry["surface_area_m2"],
+        "diameter_m": geometry["diameter_m"],
+        "water_depth_m": geometry["depth_m"],
         "final_biomass_total_kg": final_biomass_total_kg,
+        "final_biomass_per_tank_kg": final_biomass_per_tank_kg,
         "fish_harvested": fish_harvested,
+        "fish_harvested_per_tank": fish_harvested_per_tank,
         "fish_stocked": fish_stocked,
-        "fish_stocked_theoretical": fish_stocked_theoretical,
-        "fingerlings_purchase_cycle": fingerlings_purchase_cycle,
-        "fingerlings_purchase_year": fingerlings_purchase_cycle * inp.cycles_per_year,
-        "fingerling_rounding_mode": getattr(inp, "fingerling_rounding_mode", "Arredondar para cima"),
-        "fingerling_rounding_base": max(int(getattr(inp, "fingerling_rounding_base", 1000)), 1),
+        "fish_stocked_per_tank": fish_stocked_per_tank,
         "biomass_gain_kg": biomass_gain,
+        "biomass_gain_planned_kg": biomass_gain_planned,
 
         "production_per_cycle_kg": final_biomass_total_kg,
         "production_per_year_kg": production_per_year_kg,
+        "cycles_per_year_effective": cycles_per_year_effective,
 
         "feed_consumption_kg": feed_consumption_cycle_kg,
         "feed_consumption_cycle_kg": feed_consumption_cycle_kg,
@@ -519,25 +1166,6 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         "feed_cost_cycle": feed_cost_cycle,
         "feed_cost_year": feed_cost_year,
         "implied_fcr": implied_fcr,
-        "economic_model_mode": economic_costs["economic_model_mode"],
-        "cost_scaling_mode": economic_costs["cost_scaling_mode"],
-        "cost_reference_units": cost_reference_units,
-        "cost_scale_factor": cost_scale_factor,
-        "electricity_cost_cycle_effective": electricity_cost_cycle_effective,
-        "electricity_cost_fixed_cycle_effective": economic_costs["electricity_cost_fixed_cycle_effective"],
-        "electricity_cost_variable_cycle_effective": economic_costs["electricity_cost_variable_cycle_effective"],
-        "electricity_cost_year": electricity_cost_year,
-        "labor_cost_cycle_effective": labor_cost_cycle_effective,
-        "labor_cost_fixed_cycle_effective": economic_costs["labor_cost_fixed_cycle_effective"],
-        "labor_cost_variable_cycle_effective": economic_costs["labor_cost_variable_cycle_effective"],
-        "labor_cost_year": labor_cost_year,
-        "other_costs_cycle_effective": other_costs_cycle_effective,
-        "other_cost_fixed_cycle_effective": economic_costs["other_cost_fixed_cycle_effective"],
-        "other_cost_variable_cycle_effective": economic_costs["other_cost_variable_cycle_effective"],
-        "other_costs_year": other_costs_year,
-        "capex_total_effective": capex_total_effective,
-        "capex_fixed_total_effective": economic_costs["capex_fixed_total_effective"],
-        "capex_variable_total_effective": economic_costs["capex_variable_total_effective"],
 
         "revenue_cycle": revenue_cycle,
         "revenue_year": revenue_year,
@@ -545,33 +1173,60 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         "gross_margin_year": gross_margin_year,
         "opex_cycle": opex_cycle,
         "opex_year": opex_year,
+        "economic_model_mode": economic_costs["economic_model_mode"],
+        "cost_scaling_mode": economic_costs["cost_scaling_mode"],
+        "cost_reference_units": economic_costs["cost_reference_units"],
+        "cost_scale_factor": economic_costs["cost_scale_factor"],
 
         "fingerling_cost_cycle": fingerling_cost_cycle,
         "fingerling_cost_year": fingerling_cost_year,
+
+        "aeration_mode": aeration_mode,
+        "selected_aeration_technology": selected_aeration["technology"],
+        "selected_aeration_model": selected_aeration["model"],
+        "selected_aeration_qty_total": selected_aeration["quantity_total"],
+        "selected_aeration_power_kw": selected_aeration["power_installed_kw"],
+        "selected_aeration_warning": selected_aeration["compatibility_warning"],
+        "aeration_details": selected_aeration["details"],
+        "oxygen_demand_kg_h": oxygen_demand_kg_h,
+        "oxygen_demand_per_tank_kg_h": oxygen_demand_per_tank_kg_h,
+        "altitude_factor": altitude_factor,
+        "temp_aeration_factor": temp_aeration_factor,
+        "field_factor": field_factor,
+        "installed_oxygen_supply_kg_h": selected_aeration["installed_oxygen_supply_kg_h"],
+        "required_aerators": selected_aeration["quantity_total"],
+        "required_aerators_auto": selected_aeration["quantity_total"] if aeration_mode == "Automático" else 0,
         "aeration_energy_cost_cycle": aeration_energy_cost_cycle,
         "aeration_energy_cost_year": aeration_energy_cost_year,
+        "aeration_phase_operation": aeration_phase_operation,
+        "peak_installed_power_kw": aeration_modulation_summary["peak_installed_power_kw"],
+        "average_active_power_kw": aeration_modulation_summary["average_active_power_kw"],
+        "aeration_operation_mode": aeration_modulation_summary["strategy_mode"],
+        "aeration_control_strategy": aeration_modulation_summary["control_strategy"],
+        "aeration_control_equipment": aeration_modulation_summary["control_equipment_recommended"],
+        "aeration_control_note": aeration_modulation_summary["control_note"],
+        "aeration_energy_cost_cycle_fixed_power": aeration_modulation_summary["cost_cycle_fixed_power"],
+        "aeration_energy_cost_cycle_strategy": aeration_modulation_summary["cost_cycle_modulated"],
+        "aeration_savings_cycle_rs": aeration_modulation_summary["savings_cycle_rs"],
+        "aeration_savings_cycle_pct": aeration_modulation_summary["savings_cycle_pct"],
 
-        "oxygen_demand_kg_h": oxygen_demand_kg_h,
-        "required_aerators": required_aerators,
-        "auto_required_aerators": auto_required_aerators,
-        "aerator_quantity_mode": inp.aerator_quantity_mode,
-        "installed_oxygen_supply_kg_h": required_aerators * aerator_capacity_each,
+        "electricity_cost_cycle_effective": economic_costs["electricity_cost_cycle_effective"],
+        "labor_cost_cycle_effective": economic_costs["labor_cost_cycle_effective"],
+        "other_costs_cycle_effective": economic_costs["other_costs_cycle_effective"],
+        "capex_total_effective": economic_costs["capex_total_effective"],
 
-        "estimated_cycle_days": cycle_days,
-        "adjusted_daily_growth_g": adjusted_daily_growth_g(inp),
-
+        "production_schedule": production_schedule,
         "feeding_plan": feeding_plan,
         "growth_curve": growth_curve,
         "cost_curve": cost_curve,
-        "production_schedule": production_schedule,
+        "growth_segments_used": growth_segments_used,
+        "estimated_cycle_days": cycle_days,
+        "adjusted_daily_growth_g": adjusted_daily_growth_g(inp),
+        "geometry_warning": structure_warning(inp.system_type, geometry["depth_m"]),
 
-        "cost_per_kg": (
-            opex_cycle / final_biomass_total_kg
-            if final_biomass_total_kg > 0
-            else 0.0
-        ),
+        "cost_per_kg": opex_cycle / final_biomass_total_kg if final_biomass_total_kg else 0.0,
         "payback_years": (
-            capex_total_effective / gross_margin_year
+            economic_costs["capex_total_effective"] / gross_margin_year
             if gross_margin_year > 0
             else None
         ),

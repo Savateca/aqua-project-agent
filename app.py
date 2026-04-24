@@ -1,26 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
-import tempfile
-import unicodedata
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-
-import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from aqua_project_agent_gui_dashboard_v1.calculator import (
     DEFAULT_FEEDING_CURVE,
+    FOUNTAIN_LIBRARY,
+    LOBULAR_BLOWER_LIBRARY,
+    PADDLEWHEEL_LIBRARY,
+    RADIAL_BLOWER_LIBRARY,
+    altitude_transfer_factor,
     calculate_dashboard_project,
+    recommended_depth_for_structure,
+    surface_aeration_base_factor,
 )
 from aqua_project_agent_gui_dashboard_v1.exporter import (
-    export_dashboard_report_to_docx,
     export_docx_to_pdf,
     export_markdown_to_docx,
 )
@@ -31,7 +28,6 @@ from aqua_project_agent_gui_dashboard_v1.report import (
     num,
 )
 
-from core_engine.service import run_project_calculation
 from auth.supabase_auth import is_supabase_configured, sign_in_with_password
 from data_access.local_store import (
     build_project_payload,
@@ -97,24 +93,28 @@ h1, h2, h3 {
     background-color: white !important;
 }
 
-[data-testid="stSidebar"] button {
+[data-testid="stSidebar"] .stButton > button {
     color: #ffffff !important;
-    background: linear-gradient(180deg, #1f4f5a 0%, #163f48 100%) !important;
-    border: 1px solid rgba(255,255,255,0.22) !important;
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-}
-
-[data-testid="stSidebar"] button:hover {
-    color: #ffffff !important;
-    background: linear-gradient(180deg, #2b6875 0%, #1f5661 100%) !important;
+    background-color: #00616b !important;
     border: 1px solid rgba(255,255,255,0.35) !important;
 }
 
-[data-testid="stSidebar"] button p,
-[data-testid="stSidebar"] button span,
-[data-testid="stSidebar"] button div {
+[data-testid="stSidebar"] .stButton > button p,
+[data-testid="stSidebar"] .stButton > button span {
     color: #ffffff !important;
+}
+
+[data-testid="stSidebar"] .stButton > button:disabled {
+    color: #1f2937 !important;
+    background-color: #e5e7eb !important;
+    border: 1px solid #cbd5e1 !important;
+    opacity: 1 !important;
+}
+
+[data-testid="stSidebar"] .stButton > button:disabled p,
+[data-testid="stSidebar"] .stButton > button:disabled span {
+    color: #1f2937 !important;
+    opacity: 1 !important;
 }
 
 .kpi-card {
@@ -124,20 +124,6 @@ h1, h2, h3 {
     box-shadow: 0 4px 14px rgba(0,0,0,0.08);
     border-left: 6px solid #2a9d8f;
     margin-bottom: 12px;
-}
-
-.stButton button[kind="primary"] {
-    color: #ffffff !important;
-    background: linear-gradient(180deg, #c62828 0%, #8e1e1e 100%) !important;
-    border: 1px solid #7f1d1d !important;
-    border-radius: 10px !important;
-    font-weight: 700 !important;
-}
-
-.stButton button[kind="primary"]:hover {
-    color: #ffffff !important;
-    background: linear-gradient(180deg, #d32f2f 0%, #a12626 100%) !important;
-    border: 1px solid #991b1b !important;
 }
 
 .kpi-title {
@@ -150,12 +136,6 @@ h1, h2, h3 {
     font-size: 28px;
     font-weight: 700;
     color: #0f4c5c;
-}
-
-.kpi-caption {
-    font-size: 12px;
-    color: #5b6b73;
-    margin-top: 8px;
 }
 
 .section-box {
@@ -192,58 +172,97 @@ h1, h2, h3 {
     unsafe_allow_html=True,
 )
 
+
+def _ui_geometry(system_type: str, unit_volume_m3: float, length_m: float, width_m: float, depth_m: float) -> dict:
+    depth = max(float(depth_m), 0.2)
+    if system_type == "Circular revestido":
+        volume = max(float(unit_volume_m3), 0.1)
+        diameter = (4.0 * volume / (3.141592653589793 * depth)) ** 0.5
+        area = 3.141592653589793 * (diameter ** 2) / 4.0
+        return {"volume_m3": volume, "diameter_m": diameter, "area_m2": area, "length_m": diameter, "width_m": diameter}
+    length = max(float(length_m), 0.1)
+    width = max(float(width_m), 0.1)
+    area = length * width
+    volume = area * depth
+    return {"volume_m3": volume, "diameter_m": 0.0, "area_m2": area, "length_m": length, "width_m": width}
+
+
+def _model_options(library: list[dict], key: str = "model") -> list[str]:
+    return [item[key] for item in library]
+
+
 sample_data = {
-    "project_name": "Projeto dashboard de tilapicultura",
+    "project_name": "Projeto tilápia tanques revestidos",
     "author_name": "Luiz Henrique Sousa Salgado",
     "region_focus": "Brasil, com ênfase no Sudeste",
-    "system_type": "tanque circular de geomembrana",
-    "species": "tilápia",
-    "number_of_units": 12,
+    "system_type": "Circular revestido",
+    "species": "Tilápia",
+    "number_of_units": 9,
     "unit_volume_m3": 100.0,
-    "density_kg_m3": 25.0,
+    "water_depth_m": 1.2,
+    "tank_length_m": 10.0,
+    "tank_width_m": 10.0,
+    "density_kg_m3": 30.0,
     "survival_rate": 0.90,
     "cycles_per_year": 2.0,
-    "production_strategy": "Ciclos simultâneos",
-    "production_batch_mode": "Automático",
-    "manual_parallel_batches": 6,
+    "production_strategy": "Escalonada",
+    "scheduling_basis": "Intervalo entre despescas",
     "harvest_interval_months": 1.0,
+    "manual_parallel_batches": 9,
+    "desired_units_per_batch": 1,
     "sale_price_per_kg": 10.0,
     "fingerling_price": 0.30,
     "fingerling_weight_kg": 1.0,
-    "fingerling_rounding_mode": "Arredondar para cima",
-    "fingerling_rounding_base": 1000,
     "electricity_cost_cycle": 12000.0,
     "labor_cost_cycle": 18000.0,
     "other_costs_cycle": 15000.0,
     "capex_total": 450000.0,
     "cost_scaling_mode": "Fixos (não escalar)",
-    "cost_reference_units": 12,
+    "cost_reference_units": 9,
     "economic_model_mode": "Simplificado",
     "electricity_cost_fixed_cycle": 0.0,
-    "electricity_cost_per_unit_cycle": 1000.0,
+    "electricity_cost_per_unit_cycle": 1500.0,
     "labor_cost_fixed_cycle": 0.0,
-    "labor_cost_per_unit_cycle": 1500.0,
+    "labor_cost_per_unit_cycle": 2250.0,
     "other_cost_fixed_cycle": 0.0,
-    "other_cost_per_unit_cycle": 1250.0,
+    "other_cost_per_unit_cycle": 1875.0,
     "capex_fixed_total": 0.0,
-    "capex_per_unit": 37500.0,
+    "capex_per_unit": 56250.0,
     "initial_weight_g": 1.0,
     "target_weight_g": 1000.0,
     "water_temperature_c": 28.0,
     "base_daily_growth_g": 4.5,
-    "oxygen_demand_mg_per_kg_h": 250.0,
-    "aerator_hp_each": 0.75,
-    "oxygen_transfer_kg_o2_hp_h": 1.38,
+    "growth_curve_adjustment_pct": 100.0,
+    "oxygen_demand_mg_per_kg_h": 550.0,
+    "site_altitude_m": 0.0,
+    "target_do_mg_l": 5.0,
+    "field_efficiency_pct": 85.0,
+    "aeration_safety_factor_pct": 20.0,
     "aeration_hours_per_day": 24.0,
     "electricity_price_kwh": 0.45,
-    "aerator_quantity_mode": "Manual",
-    "manual_aerators": 12,
-    "phase1_fcr": 1.20,
-    "phase2_fcr": 1.35,
-    "phase3_fcr": 1.50,
-    "phase4_fcr": 1.70,
+    "aeration_mode": "Automático",
+    "automatic_aeration_technology": "Chafariz",
+    "blower_type": "Automático",
+    "diffusion_efficiency_pct": 12.0,
+    "aeration_power_mode": "Potência modulada por fase",
+    "aeration_control_strategy": "Automático",
+    "blower_min_operational_pct": 35.0,
+    "fountain_min_operational_pct": 50.0,
+    "paddle_min_operational_pct": 50.0,
+    "manual_use_fountain": True,
+    "manual_fountain_model": "B-501/B-503",
+    "manual_fountain_qty": 1,
+    "manual_use_paddlewheel": False,
+    "manual_paddle_model": "B-209",
+    "manual_paddle_qty": 0,
+    "manual_use_radial": False,
+    "manual_radial_model": "CRA-750 TS",
+    "manual_radial_qty": 0,
+    "manual_use_lobular": False,
+    "manual_lobular_model": "Família SRT",
+    "manual_lobular_qty": 0,
     "report_profile": "Produtor",
-    "notes": "Versão com dashboard visual e relatório profissional.",
+    "notes": "Projeto de tilápia em tanques revestidos superintensivos.",
 }
 
 for i, row in enumerate(DEFAULT_FEEDING_CURVE, start=1):
@@ -254,6 +273,70 @@ for i, row in enumerate(DEFAULT_FEEDING_CURVE, start=1):
     sample_data[f"phase{i}_protein_percent"] = row["protein_percent"]
     sample_data[f"phase{i}_pellet_mm"] = row["pellet_mm"]
     sample_data[f"phase{i}_feed_price_per_kg"] = row["feed_price_per_kg"]
+    sample_data[f"phase{i}_fcr"] = row.get("phase_fcr", 1.60)
+
+
+
+def altitude_transfer_factor(altitude_m: float) -> float:
+    """
+    Fator simplificado de correção da transferência de oxigênio por altitude.
+    Base operacional da v1:
+    0 m -> 1.00
+    500 m -> 0.95
+    1000 m -> 0.90
+    1500 m -> 0.85
+    2000 m -> 0.79
+    """
+    try:
+        alt = max(0.0, float(altitude_m))
+    except (TypeError, ValueError):
+        alt = 0.0
+
+    if alt <= 0:
+        return 1.00
+    if alt <= 500:
+        return 0.95
+    if alt <= 1000:
+        return 0.90
+    if alt <= 1500:
+        return 0.85
+    if alt <= 2000:
+        return 0.79
+
+    extra_blocks = (alt - 2000) / 500.0
+    factor = 0.79 - (0.04 * extra_blocks)
+    return max(0.60, round(factor, 3))
+
+
+
+def surface_aeration_base_factor(temp_c: float) -> float:
+    """
+    Fator-base simplificado de campo para aeradores superficiais
+    (chafariz e pás) na v1 do sistema.
+
+    Referência operacional:
+    - a 28 °C -> 0,50
+    - temperaturas mais altas reduzem a eficiência efetiva
+    - temperaturas mais baixas aumentam levemente a eficiência efetiva
+    """
+    try:
+        temp = float(temp_c)
+    except (TypeError, ValueError):
+        temp = 28.0
+
+    if temp <= 20:
+        return 0.60
+    if temp <= 24:
+        return 0.55
+    if temp <= 28:
+        return 0.50
+    if temp <= 30:
+        return 0.47
+    if temp <= 32:
+        return 0.44
+    if temp <= 34:
+        return 0.41
+    return 0.38
 
 if "dash_form_data" not in st.session_state:
     st.session_state.dash_form_data = sample_data.copy()
@@ -276,32 +359,13 @@ if "auth_user_id" not in st.session_state:
 if "auth_user_email" not in st.session_state:
     st.session_state.auth_user_email = None
 
-if "project_name_widget" not in st.session_state:
-    st.session_state.project_name_widget = sample_data["project_name"]
 
-if "save_project_name_dashboard" not in st.session_state:
-    st.session_state.save_project_name_dashboard = sample_data["project_name"]
-
-def _safe_filename(value: str) -> str:
-    text = unicodedata.normalize("NFKD", str(value or "projeto"))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    return text or "projeto"
-
-
-
-def _read_file_bytes(path: str | Path) -> bytes:
-    return Path(path).read_bytes()
-
-
-def _running_in_cloud() -> bool:
-    return (
-        bool(os.environ.get("IS_STREAMLIT_CLOUD"))
-        or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
-        or Path("/mount/src").exists()
-    )
+def _merge_saved_inputs(saved_inputs: dict | None) -> dict:
+    """Garante compatibilidade ao abrir projetos antigos com campos novos."""
+    merged = sample_data.copy()
+    if isinstance(saved_inputs, dict):
+        merged.update(saved_inputs)
+    return merged
 
 
 def _use_supabase_storage() -> bool:
@@ -325,7 +389,11 @@ def _load_project_active(project_id: str) -> dict:
 
 def _save_project_active(payload: dict, current_project_id: str | None = None) -> str:
     if _use_supabase_storage():
-        return save_project_remote(payload, st.session_state["auth_user_id"], current_project_id=current_project_id)
+        return save_project_remote(
+            payload,
+            st.session_state["auth_user_id"],
+            current_project_id=current_project_id,
+        )
     return save_project(payload)
 
 
@@ -344,16 +412,14 @@ def _duplicate_project_active(project_id: str) -> str:
 
 with st.sidebar:
     st.markdown("## Aqua Project Agent")
-    st.markdown("Planejamento técnico-econômico aquícola")
+    st.markdown("Tilápia em tanques revestidos superintensivos")
     st.markdown("---")
 
     output_dir = st.text_input("Pasta de saída", "outputs")
     output_name = st.text_input("Nome base dos arquivos", "projeto_tilapia_dashboard")
 
-    if st.button("Carregar exemplo"):
+    if st.button("Carregar exemplo", key="btn_carregar_exemplo"):
         st.session_state.dash_form_data = sample_data.copy()
-        st.session_state.project_name_widget = sample_data["project_name"]
-        st.session_state.save_project_name_dashboard = sample_data["project_name"]
         st.session_state.current_project_id = None
         st.session_state.selected_project_id = None
         st.session_state.latest_results = None
@@ -362,23 +428,16 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Persistência")
 
-    if _running_in_cloud():
-        if is_supabase_configured():
-            st.session_state.storage_mode = "Supabase beta"
-            st.info("Na versão em nuvem, os projetos ficam vinculados ao usuário no Supabase.")
-        else:
-            st.session_state.storage_mode = "Local"
-            st.warning("Supabase não configurado. O modo local na nuvem não é recomendado.")
+    if is_supabase_configured():
+        st.session_state.storage_mode = st.radio(
+            "Modo de armazenamento",
+            ["Local", "Supabase beta"],
+            index=0 if st.session_state.get("storage_mode", "Local") == "Local" else 1,
+            key="storage_mode_radio",
+        )
     else:
-        if is_supabase_configured():
-            st.session_state.storage_mode = st.radio(
-                "Modo de armazenamento",
-                ["Local", "Supabase beta"],
-                index=0 if st.session_state.get("storage_mode", "Local") == "Local" else 1,
-            )
-        else:
-            st.session_state.storage_mode = "Local"
-            st.info("Supabase ainda não configurado no .env. Usando modo local.")
+        st.session_state.storage_mode = "Local"
+        st.info("Supabase ainda não configurado no .env. Usando modo local.")
 
     if st.session_state.storage_mode == "Supabase beta":
         st.markdown("#### Login beta")
@@ -387,7 +446,7 @@ with st.sidebar:
         c_auth1, c_auth2 = st.columns(2)
 
         with c_auth1:
-            if st.button("Entrar"):
+            if st.button("Entrar", key="btn_supabase_entrar"):
                 try:
                     auth_data = sign_in_with_password(email_login, password_login)
                     st.session_state.auth_user_id = auth_data.get("user_id")
@@ -398,7 +457,7 @@ with st.sidebar:
                     st.error(f"Falha no login: {exc}")
 
         with c_auth2:
-            if st.button("Sair"):
+            if st.button("Sair", key="btn_supabase_sair"):
                 st.session_state.auth_user_id = None
                 st.session_state.auth_user_email = None
                 st.session_state.current_project_id = None
@@ -413,12 +472,17 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Projetos")
 
-    projects = _list_projects_active()
+    try:
+        projects = _list_projects_active()
+    except Exception as exc:
+        projects = []
+        st.error(f"Não foi possível listar projetos: {exc}")
+
     project_options = [""] + [p["project_id"] for p in projects]
     project_labels = {
         "": "Selecione um projeto salvo",
         **{
-            p["project_id"]: f"{p['project_name']} ({str(p.get('updated_at', ''))[:19].replace('T', ' ')})"
+            p["project_id"]: f"{p.get('project_name', 'Projeto sem nome')} ({str(p.get('updated_at', ''))[:19].replace('T', ' ')})"
             for p in projects
         },
     }
@@ -433,6 +497,7 @@ with st.sidebar:
         index=project_options.index(st.session_state.selected_project_id)
         if st.session_state.selected_project_id in project_options
         else 0,
+        key="saved_projects_select",
     )
 
     st.session_state.selected_project_id = selected if selected else None
@@ -440,26 +505,21 @@ with st.sidebar:
     cproj1, cproj2 = st.columns(2)
 
     with cproj1:
-        if st.button("Abrir projeto"):
+        if st.button("Abrir projeto", key="btn_abrir_projeto"):
             if st.session_state.selected_project_id:
-                saved = _load_project_active(st.session_state.selected_project_id)
-                loaded_inputs = saved.get("inputs", sample_data.copy())
-                meta_name = saved.get("project_meta", {}).get("project_name")
-                if meta_name:
-                    loaded_inputs["project_name"] = meta_name
-                st.session_state.dash_form_data = loaded_inputs
-                st.session_state.project_name_widget = loaded_inputs.get("project_name", sample_data["project_name"])
-                st.session_state.save_project_name_dashboard = loaded_inputs.get("project_name", sample_data["project_name"])
-                st.session_state.current_project_id = saved.get("project_meta", {}).get("project_id")
-                st.session_state.latest_results = saved.get("results")
-                st.success("Projeto carregado com sucesso.")
-                st.rerun()
+                try:
+                    saved = _load_project_active(st.session_state.selected_project_id)
+                    st.session_state.dash_form_data = _merge_saved_inputs(saved.get("inputs"))
+                    st.session_state.current_project_id = saved.get("project_meta", {}).get("project_id")
+                    st.session_state.latest_results = saved.get("results")
+                    st.success("Projeto carregado com sucesso.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Erro ao abrir projeto: {exc}")
 
     with cproj2:
-        if st.button("Novo projeto"):
+        if st.button("Novo projeto", key="btn_novo_projeto"):
             st.session_state.dash_form_data = sample_data.copy()
-            st.session_state.project_name_widget = sample_data["project_name"]
-            st.session_state.save_project_name_dashboard = sample_data["project_name"]
             st.session_state.current_project_id = None
             st.session_state.selected_project_id = None
             st.session_state.latest_results = None
@@ -469,23 +529,29 @@ with st.sidebar:
     cproj3, cproj4 = st.columns(2)
 
     with cproj3:
-        if st.button("Duplicar projeto"):
+        if st.button("Duplicar projeto", key="btn_duplicar_projeto"):
             if st.session_state.selected_project_id:
-                new_id = _duplicate_project_active(st.session_state.selected_project_id)
-                st.session_state.selected_project_id = new_id
-                st.session_state.current_project_id = new_id
-                st.success(f"Projeto duplicado: {new_id}")
-                st.rerun()
+                try:
+                    new_id = _duplicate_project_active(st.session_state.selected_project_id)
+                    st.session_state.selected_project_id = new_id
+                    st.session_state.current_project_id = new_id
+                    st.success(f"Projeto duplicado: {new_id}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Erro ao duplicar projeto: {exc}")
 
     with cproj4:
-        if st.button("Excluir projeto"):
+        if st.button("Excluir projeto", key="btn_excluir_projeto"):
             if st.session_state.selected_project_id:
-                _delete_project_active(st.session_state.selected_project_id)
-                st.session_state.current_project_id = None
-                st.session_state.selected_project_id = None
-                st.session_state.latest_results = None
-                st.success("Projeto excluído.")
-                st.rerun()
+                try:
+                    _delete_project_active(st.session_state.selected_project_id)
+                    st.session_state.current_project_id = None
+                    st.session_state.selected_project_id = None
+                    st.session_state.latest_results = None
+                    st.success("Projeto excluído.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Erro ao excluir projeto: {exc}")
 
     if st.session_state.current_project_id:
         st.caption(f"Projeto atual: {st.session_state.current_project_id}")
@@ -510,7 +576,7 @@ st.markdown(
     """
 <div class="hero-box">
     <div class="hero-title">Aqua Project Agent Dashboard</div>
-    <div class="hero-subtitle">Planejador técnico-econômico de tilapicultura com visual profissional</div>
+    <div class="hero-subtitle">Sistema especialista em tilápia para tanques revestidos superintensivos</div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -527,253 +593,127 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     ]
 )
 
+
 with tab1:
     st.markdown('<div class="section-box">', unsafe_allow_html=True)
-    st.subheader("Dados básicos do projeto")
+    st.subheader("Projeto básico")
 
     fd["report_profile"] = st.selectbox(
         "Perfil do relatório",
         ["Produtor", "Técnico", "Banco/Financiamento"],
-        index=["Produtor", "Técnico", "Banco/Financiamento"].index(
-            fd.get("report_profile", "Produtor")
-        ),
+        index=["Produtor", "Técnico", "Banco/Financiamento"].index(fd.get("report_profile", "Produtor")),
+        key="report_profile_select",
     )
     report_profile = fd["report_profile"]
 
-    c1, c2 = st.columns(2)
+    fd["system_type"] = st.selectbox(
+        "Tipo de estrutura",
+        ["Circular revestido", "Suspenso revestido retangular", "Escavado revestido"],
+        index=["Circular revestido", "Suspenso revestido retangular", "Escavado revestido"].index(
+            fd.get("system_type", "Circular revestido") if fd.get("system_type", "Circular revestido") in ["Circular revestido", "Suspenso revestido retangular", "Escavado revestido"] else "Circular revestido"
+        ),
+    )
+    suggested_depth = recommended_depth_for_structure(fd["system_type"])
 
-    with c1:
-        fd["project_name"] = st.text_input("Nome do projeto", key="project_name_widget")
-        st.session_state.dash_form_data["project_name"] = fd["project_name"]
-        st.session_state.save_project_name_dashboard = fd["project_name"]
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        fd["project_name"] = st.text_input("Nome do projeto", fd["project_name"])
         fd["author_name"] = st.text_input("Autor", fd["author_name"])
-        fd["species"] = st.text_input("Espécie", fd["species"])
-        fd["system_type"] = st.text_input("Sistema de cultivo", fd["system_type"])
+        st.text_input("Espécie", value="Tilápia", disabled=True)
+        fd["species"] = "Tilápia"
         fd["region_focus"] = st.text_input("Região de referência", fd["region_focus"])
-        fd["number_of_units"] = st.number_input(
-            "Número de unidades",
-            min_value=1,
-            value=int(fd["number_of_units"]),
-        )
-        fd["unit_volume_m3"] = st.number_input(
-            "Volume por unidade (m³)",
-            min_value=1.0,
-            value=float(fd["unit_volume_m3"]),
-            step=1.0,
-        )
-        fd["density_kg_m3"] = st.number_input(
-            "Densidade final (kg/m³)",
-            min_value=0.1,
-            value=float(fd["density_kg_m3"]),
-            step=0.5,
-        )
-        fd["survival_rate"] = st.number_input(
-            "Sobrevivência (0 a 1)",
-            min_value=0.01,
-            max_value=0.999,
-            value=float(fd["survival_rate"]),
-            step=0.01,
-        )
-        fd["cycles_per_year"] = st.number_input(
-            "Ciclos por ano",
-            min_value=0.1,
-            value=float(fd["cycles_per_year"]),
-            step=0.1,
-        )
+        fd["number_of_units"] = st.number_input("Tanques informados", min_value=1, value=int(fd["number_of_units"]), step=1)
 
-        fd["production_strategy"] = st.selectbox(
-            "Estratégia de produção",
-            ["Ciclos simultâneos", "Escalonada"],
-            index=0 if fd.get("production_strategy", "Ciclos simultâneos") == "Ciclos simultâneos" else 1,
-        )
+    with g2:
+        fd["initial_weight_g"] = st.number_input("Peso inicial (g)", min_value=1.0, value=float(max(fd.get("initial_weight_g", 1.0), 1.0)), step=1.0)
+        fd["target_weight_g"] = st.number_input("Peso final alvo (g)", min_value=100.0, max_value=2000.0, value=float(min(max(fd.get("target_weight_g", 1000.0), 100.0), 2000.0)), step=10.0)
+        fd["density_kg_m3"] = st.number_input("Densidade final (kg/m³)", min_value=10.0, max_value=50.0, value=float(min(max(fd.get("density_kg_m3", 30.0), 10.0), 50.0)), step=0.5)
+        fd["survival_rate"] = st.number_input("Sobrevivência (0 a 1)", min_value=0.01, max_value=0.999, value=float(fd.get("survival_rate", 0.90)), step=0.01)
+        fd["water_temperature_c"] = st.number_input("Temperatura média da água (°C)", min_value=10.0, max_value=40.0, value=float(fd.get("water_temperature_c", 28.0)), step=0.5)
 
+    with g3:
+        fd["production_strategy"] = st.selectbox("Estratégia de produção", ["Ciclos simultâneos", "Escalonada"], index=0 if fd.get("production_strategy", "Ciclos simultâneos") == "Ciclos simultâneos" else 1)
         if fd["production_strategy"] == "Escalonada":
-            fd["harvest_interval_months"] = st.number_input(
-                "Intervalo entre despescas (meses)",
-                min_value=0.25,
-                value=float(fd.get("harvest_interval_months", 1.0)),
-                step=0.25,
-            )
-
-            fd["production_batch_mode"] = st.selectbox(
-                "Definição dos lotes em paralelo",
-                ["Automático", "Personalizado"],
-                index=0 if fd.get("production_batch_mode", "Automático") == "Automático" else 1,
-            )
-
-            if fd["production_batch_mode"] == "Personalizado":
-                fd["manual_parallel_batches"] = st.number_input(
-                    "Quantidade de lotes em paralelo",
-                    min_value=1,
-                    value=int(fd.get("manual_parallel_batches", 6)),
-                    step=1,
-                )
-                st.caption(
-                    "Exemplo: 12 tanques e 6 lotes em paralelo = 2 tanques por lote, permitindo 1 despesca por mês após a fase de enchimento da esteira."
-                )
+            fd["scheduling_basis"] = st.selectbox("Critério de escalonamento", ["Intervalo entre despescas", "Número de lotes", "Tanques por lote"], index=["Intervalo entre despescas", "Número de lotes", "Tanques por lote"].index(fd.get("scheduling_basis", "Intervalo entre despescas")))
+            if fd["scheduling_basis"] == "Intervalo entre despescas":
+                fd["harvest_interval_months"] = st.number_input("Intervalo desejado entre despescas (meses)", min_value=0.25, value=float(fd.get("harvest_interval_months", 1.0)), step=0.25)
+            elif fd["scheduling_basis"] == "Número de lotes":
+                fd["manual_parallel_batches"] = st.number_input("Número de lotes desejado", min_value=1, value=int(fd.get("manual_parallel_batches", max(fd.get("number_of_units", 1), 1))), step=1)
             else:
-                fd["manual_parallel_batches"] = int(fd.get("manual_parallel_batches", 6))
-
-            st.caption(
-                "Use 1,00 para produção mensal. O cálculo econômico anual é mantido, mas distribuído em lotes ao longo do ano."
-            )
+                fd["desired_units_per_batch"] = st.number_input("Tanques por lote", min_value=1, value=int(fd.get("desired_units_per_batch", 1)), step=1)
         else:
-            fd["harvest_interval_months"] = float(fd.get("harvest_interval_months", 1.0))
-            fd["production_batch_mode"] = fd.get("production_batch_mode", "Automático")
-            fd["manual_parallel_batches"] = int(fd.get("manual_parallel_batches", 6))
+            fd["scheduling_basis"] = "Intervalo entre despescas"
+        fd["sale_price_per_kg"] = st.number_input("Preço de venda (R$/kg)", min_value=0.01, value=float(fd.get("sale_price_per_kg", 10.0)), step=0.1)
+        fd["fingerling_price"] = st.number_input("Preço do alevino/recria (R$/unidade)", min_value=0.0, value=float(fd.get("fingerling_price", 0.30)), step=0.05)
 
-    with c2:
-        fd["sale_price_per_kg"] = st.number_input(
-            "Preço de venda (R$/kg)",
-            min_value=0.01,
-            value=float(fd["sale_price_per_kg"]),
-            step=0.1,
-        )
-        fd["fingerling_price"] = st.number_input(
-            "Preço do alevino/recria (R$/unidade)",
-            min_value=0.0,
-            value=float(fd["fingerling_price"]),
-            step=0.05,
-        )
+    st.markdown("#### Geometria da unidade")
+    h1, h2, h3 = st.columns(3)
+    if fd["system_type"] == "Circular revestido":
+        with h1:
+            fd["unit_volume_m3"] = st.number_input("Volume útil por unidade (m³)", min_value=1.0, value=float(fd["unit_volume_m3"]), step=1.0)
+        with h2:
+            fd["water_depth_m"] = st.number_input("Altura da água (m)", min_value=0.5, value=float(fd.get("water_depth_m", suggested_depth)), step=0.1, help=f"Sugestão do sistema para este tipo de estrutura: {suggested_depth:.1f} m")
+        with h3:
+            st.caption("Para tanques circulares, o diâmetro é calculado automaticamente a partir do volume e da profundidade.")
+    else:
+        st.info("Para estruturas não circulares, o sistema considera comprimento, largura e profundidade para validar o volume útil e a admissibilidade do chafariz.")
+        with h1:
+            fd["tank_length_m"] = st.number_input("Comprimento interno (m)", min_value=1.0, value=float(fd.get("tank_length_m", 10.0)), step=0.5)
+        with h2:
+            fd["tank_width_m"] = st.number_input("Largura interna (m)", min_value=1.0, value=float(fd.get("tank_width_m", 10.0)), step=0.5)
+        with h3:
+            fd["water_depth_m"] = st.number_input("Altura da água (m)", min_value=0.5, value=float(fd.get("water_depth_m", suggested_depth)), step=0.1, help=f"Sugestão do sistema para este tipo de estrutura: {suggested_depth:.1f} m")
 
-        fingerling_weight_g_value = float(fd.get("fingerling_weight_kg", 1.0))
-        if fingerling_weight_g_value < 1:
-            fingerling_weight_g_value = fingerling_weight_g_value * 1000.0
-
-        fd["fingerling_weight_kg"] = st.number_input(
-            "Peso do alevino/recria (g)",
-            min_value=1.0,
-            value=max(1.0, fingerling_weight_g_value),
-            step=0.1,
-        )
-
-        fd["fingerling_rounding_mode"] = st.selectbox(
-            "Compra de alevinos",
-            ["Sem arredondamento", "Arredondar para cima"],
-            index=1 if fd.get("fingerling_rounding_mode", "Arredondar para cima") == "Arredondar para cima" else 0,
-        )
-        if fd["fingerling_rounding_mode"] == "Arredondar para cima":
-            fd["fingerling_rounding_base"] = st.number_input(
-                "Lote mínimo de arredondamento (unid.)",
-                min_value=1,
-                value=int(fd.get("fingerling_rounding_base", 1000)),
-                step=100,
-            )
+    geom_ui = _ui_geometry(fd["system_type"], float(fd.get("unit_volume_m3", 0.0)), float(fd.get("tank_length_m", 0.0)), float(fd.get("tank_width_m", 0.0)), float(fd.get("water_depth_m", suggested_depth)))
+    fd["unit_volume_m3"] = geom_ui["volume_m3"]
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        if fd["system_type"] == "Circular revestido":
+            st.metric("Diâmetro interno estimado", f"{num(geom_ui['diameter_m'])} m")
         else:
-            fd["fingerling_rounding_base"] = int(fd.get("fingerling_rounding_base", 1000))
+            st.metric("Comprimento x largura", f"{num(geom_ui['length_m'])} x {num(geom_ui['width_m'])} m")
+    with m2:
+        st.metric("Área superficial por tanque", f"{num(geom_ui['area_m2'])} m²")
+    with m3:
+        st.metric("Volume útil calculado", f"{num(geom_ui['volume_m3'])} m³")
 
-        fd["economic_model_mode"] = st.selectbox(
-            "Modelo econômico",
-            ["Simplificado", "Fixo + por tanque"],
-            index=0 if fd.get("economic_model_mode", "Simplificado") == "Simplificado" else 1,
-        )
-
+    st.markdown("#### Modelo econômico")
+    e1, e2 = st.columns(2)
+    with e1:
+        fd["economic_model_mode"] = st.selectbox("Modelo econômico", ["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"], index=["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"].index(fd.get("economic_model_mode", "Simplificado") if fd.get("economic_model_mode", "Simplificado") in ["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"] else "Simplificado"))
+    with e2:
         if fd["economic_model_mode"] == "Simplificado":
-            fd["electricity_cost_cycle"] = st.number_input(
-                "Outros custos de energia por ciclo (R$)",
-                min_value=0.0,
-                value=float(fd["electricity_cost_cycle"]),
-                step=500.0,
-            )
-            fd["labor_cost_cycle"] = st.number_input(
-                "Custo de mão de obra por ciclo (R$)",
-                min_value=0.0,
-                value=float(fd["labor_cost_cycle"]),
-                step=500.0,
-            )
-            fd["other_costs_cycle"] = st.number_input(
-                "Outros custos por ciclo (R$)",
-                min_value=0.0,
-                value=float(fd["other_costs_cycle"]),
-                step=500.0,
-            )
-            fd["capex_total"] = st.number_input(
-                "CAPEX base informado (R$)",
-                min_value=0.0,
-                value=float(fd["capex_total"]),
-                step=1000.0,
-            )
+            fd["cost_scaling_mode"] = st.selectbox("Escala dos custos simplificados", ["Fixos (não escalar)", "Escalonar pelo nº de tanques"], index=["Fixos (não escalar)", "Escalonar pelo nº de tanques"].index(fd.get("cost_scaling_mode", "Fixos (não escalar)") if fd.get("cost_scaling_mode", "Fixos (não escalar)") in ["Fixos (não escalar)", "Escalonar pelo nº de tanques"] else "Fixos (não escalar)"))
+            fd["cost_reference_units"] = st.number_input("Número de unidades de referência", min_value=1, value=int(max(fd.get("cost_reference_units", fd["number_of_units"]), 1)), step=1)
 
-            fd["cost_scaling_mode"] = st.selectbox(
-                "Escalonamento econômico",
-                ["Fixos (não escalar)", "Escalonar pelo nº de tanques"],
-                index=0 if fd.get("cost_scaling_mode", "Fixos (não escalar)") == "Fixos (não escalar)" else 1,
-            )
-
-            if fd["cost_scaling_mode"] == "Escalonar pelo nº de tanques":
-                fd["cost_reference_units"] = st.number_input(
-                    "Tanques de referência dos custos base",
-                    min_value=1,
-                    value=int(fd.get("cost_reference_units", fd.get("number_of_units", 1))),
-                    step=1,
-                )
-                st.caption(
-                    "Quando ativado, energia adicional, mão de obra, outros custos e CAPEX base são escalonados proporcionalmente ao número de tanques."
-                )
-            else:
-                fd["cost_reference_units"] = int(fd.get("cost_reference_units", fd.get("number_of_units", 1)))
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        if fd["economic_model_mode"] == "Simplificado":
+            fd["electricity_cost_cycle"] = st.number_input("Outros custos de energia por ciclo (R$)", min_value=0.0, value=float(fd.get("electricity_cost_cycle", 0.0)), step=500.0)
+            fd["labor_cost_cycle"] = st.number_input("Custo de mão de obra por ciclo (R$)", min_value=0.0, value=float(fd.get("labor_cost_cycle", 0.0)), step=500.0)
+            fd["other_costs_cycle"] = st.number_input("Outros custos por ciclo (R$)", min_value=0.0, value=float(fd.get("other_costs_cycle", 0.0)), step=500.0)
+        elif fd["economic_model_mode"] == "Fixo + por tanque":
+            fd["electricity_cost_fixed_cycle"] = st.number_input("Energia fixa por ciclo (R$)", min_value=0.0, value=float(fd.get("electricity_cost_fixed_cycle", 0.0)), step=500.0)
+            fd["electricity_cost_per_unit_cycle"] = st.number_input("Energia por tanque por ciclo (R$)", min_value=0.0, value=float(fd.get("electricity_cost_per_unit_cycle", 0.0)), step=100.0)
+            fd["labor_cost_fixed_cycle"] = st.number_input("Mão de obra fixa por ciclo (R$)", min_value=0.0, value=float(fd.get("labor_cost_fixed_cycle", 0.0)), step=500.0)
+            fd["labor_cost_per_unit_cycle"] = st.number_input("Mão de obra por tanque por ciclo (R$)", min_value=0.0, value=float(fd.get("labor_cost_per_unit_cycle", 0.0)), step=100.0)
         else:
-            st.markdown("#### Estrutura fixa + por tanque")
-            e1, e2 = st.columns(2)
-            with e1:
-                fd["electricity_cost_fixed_cycle"] = st.number_input(
-                    "Energia adicional fixa/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("electricity_cost_fixed_cycle", 0.0)),
-                    step=100.0,
-                )
-                fd["labor_cost_fixed_cycle"] = st.number_input(
-                    "Mão de obra fixa/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("labor_cost_fixed_cycle", 0.0)),
-                    step=100.0,
-                )
-                fd["other_cost_fixed_cycle"] = st.number_input(
-                    "Outros custos fixos/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("other_cost_fixed_cycle", 0.0)),
-                    step=100.0,
-                )
-                fd["capex_fixed_total"] = st.number_input(
-                    "CAPEX fixo do empreendimento (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("capex_fixed_total", 0.0)),
-                    step=1000.0,
-                )
-            with e2:
-                fd["electricity_cost_per_unit_cycle"] = st.number_input(
-                    "Energia adicional por tanque/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("electricity_cost_per_unit_cycle", 1000.0)),
-                    step=50.0,
-                )
-                fd["labor_cost_per_unit_cycle"] = st.number_input(
-                    "Mão de obra por tanque/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("labor_cost_per_unit_cycle", 1500.0)),
-                    step=50.0,
-                )
-                fd["other_cost_per_unit_cycle"] = st.number_input(
-                    "Outros custos por tanque/ciclo (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("other_cost_per_unit_cycle", 1250.0)),
-                    step=50.0,
-                )
-                fd["capex_per_unit"] = st.number_input(
-                    "CAPEX por tanque (R$)",
-                    min_value=0.0,
-                    value=float(fd.get("capex_per_unit", 37500.0)),
-                    step=1000.0,
-                )
+            fd["electricity_cost_cycle"] = st.number_input("Outros custos de energia por ciclo (R$)", min_value=0.0, value=float(fd.get("electricity_cost_cycle", 0.0)), step=500.0)
+            fd["labor_cost_cycle"] = st.number_input("Custo de mão de obra por ciclo (R$)", min_value=0.0, value=float(fd.get("labor_cost_cycle", 0.0)), step=500.0)
+            fd["other_costs_cycle"] = st.number_input("Outros custos por ciclo (R$)", min_value=0.0, value=float(fd.get("other_costs_cycle", 0.0)), step=500.0)
+    with ec2:
+        if fd["economic_model_mode"] == "Simplificado":
+            fd["capex_total"] = st.number_input("CAPEX total (R$)", min_value=0.0, value=float(fd.get("capex_total", 0.0)), step=1000.0)
+        elif fd["economic_model_mode"] == "Fixo + por tanque":
+            fd["other_cost_fixed_cycle"] = st.number_input("Outros custos fixos por ciclo (R$)", min_value=0.0, value=float(fd.get("other_cost_fixed_cycle", 0.0)), step=500.0)
+            fd["other_cost_per_unit_cycle"] = st.number_input("Outros custos por tanque por ciclo (R$)", min_value=0.0, value=float(fd.get("other_cost_per_unit_cycle", 0.0)), step=100.0)
+            fd["capex_fixed_total"] = st.number_input("CAPEX fixo total (R$)", min_value=0.0, value=float(fd.get("capex_fixed_total", 0.0)), step=1000.0)
+            fd["capex_per_unit"] = st.number_input("CAPEX por tanque (R$)", min_value=0.0, value=float(fd.get("capex_per_unit", 0.0)), step=500.0)
+        else:
+            fd["capex_total"] = st.number_input("CAPEX total manual (R$)", min_value=0.0, value=float(fd.get("capex_total", 0.0)), step=1000.0)
+        fd["notes"] = st.text_area("Observações", fd["notes"], height=120)
 
-            st.caption(
-                "Neste modo, o CAPEX total do relatório é calculado por: CAPEX fixo + (CAPEX por tanque × número de tanques)."
-            )
-            fd["cost_scaling_mode"] = fd.get("cost_scaling_mode", "Fixos (não escalar)")
-            fd["cost_reference_units"] = int(fd.get("cost_reference_units", fd.get("number_of_units", 1)))
-
-        fd["notes"] = st.text_area("Observações", fd["notes"], height=150)
-
+    st.caption("A altura da água é sugerida automaticamente conforme o tipo de estrutura, mas pode ser alterada pelo usuário. Alterações na geometria mudam volume útil, biomassa por tanque, produção e aeração.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tab2:
@@ -783,43 +723,30 @@ with tab2:
     c1, c2 = st.columns(2)
 
     with c1:
-        fd["initial_weight_g"] = st.number_input(
-            "Peso inicial (g)",
-            min_value=0.1,
-            value=float(fd["initial_weight_g"]),
-            step=1.0,
-        )
-        fd["target_weight_g"] = st.number_input(
-            "Peso final alvo (g)",
-            min_value=1.0,
-            value=float(fd["target_weight_g"]),
-            step=10.0,
-        )
-        fd["water_temperature_c"] = st.number_input(
-            "Temperatura média da água (°C)",
-            min_value=10.0,
-            max_value=40.0,
-            value=float(fd["water_temperature_c"]),
-            step=0.5,
-        )
+        st.metric("Peso inicial do projeto", f"{num(fd['initial_weight_g'])} g")
+        st.metric("Peso final alvo do projeto", f"{num(fd['target_weight_g'])} g")
+        st.metric("Temperatura média da água", f"{num(fd['water_temperature_c'])} °C")
+        st.caption("Esses valores são definidos na aba Projeto básico e alimentam automaticamente o cálculo biológico do ciclo.")
 
     with c2:
-        fd["base_daily_growth_g"] = st.number_input(
-            "Ganho médio diário base a 28°C (g/dia)",
-            min_value=0.1,
-            value=float(fd["base_daily_growth_g"]),
-            step=0.1,
+        fd["growth_curve_adjustment_pct"] = st.slider(
+            "Ajuste global da curva de crescimento (%)",
+            min_value=80,
+            max_value=120,
+            value=int(fd.get("growth_curve_adjustment_pct", 100.0)),
+            step=1,
         )
-        st.info("O crescimento é ajustado pela temperatura e pela proteína das fases.")
+        st.info("A curva de crescimento consolidada usa subfaixas de peso a 28 °C: 1–5 g, 5–20 g, 20–100 g, 100–250 g, 250–650 g, 650–1.000 g e 1.000–2.000 g. A tabela alimentar trabalha com 5 fases práticas: 1–20 g, 20–250 g, 250–650 g, 650–1.000 g e 1.000–2.000 g.")
+        st.caption("Referências consolidadas: Embrapa, Auburn/Rakocy e literatura técnica para tilápia intensiva em tanques.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tab3:
     st.markdown('<div class="section-box">', unsafe_allow_html=True)
     st.subheader("Plano alimentar por fases")
-    st.caption("Edite o FCR por fase aqui, junto com os demais parâmetros da alimentação.")
+    st.caption("Edite o FCR por fase aqui, junto com os demais parâmetros da alimentação. A duração de cada fase é calculada automaticamente a partir do peso inicial, peso final, temperatura e ajuste global da curva de crescimento. A tabela-resumo mostrará a granulometria recomendada por faixa dentro de cada fase.")
 
-    for i in range(1, 5):
+    for i in range(1, 6):
         with st.expander(f"Fase {i}", expanded=(i == 1)):
             c1, c2, c3, c4 = st.columns(4)
 
@@ -865,7 +792,7 @@ with tab3:
                     key=f"prot_{i}",
                 )
                 fd[f"phase{i}_pellet_mm"] = st.number_input(
-                    f"Granulometria fase {i} (mm)",
+                    f"Granulometria base fase {i} (mm)",
                     min_value=0.1,
                     value=float(fd[f"phase{i}_pellet_mm"]),
                     step=0.1,
@@ -885,167 +812,427 @@ with tab3:
                     f"FCR fase {i}",
                     min_value=0.5,
                     max_value=3.0,
-                    value=float(fd.get(f"phase{i}_fcr", [1.20, 1.35, 1.50, 1.70][i - 1])),
+                    value=float(fd.get(f"phase{i}_fcr", [1.10, 1.35, 1.55, 1.65, 1.75][i - 1])),
                     step=0.01,
                     key=f"fcr_{i}",
                 )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+
 with tab4:
     st.markdown('<div class="section-box">', unsafe_allow_html=True)
     st.subheader("Oxigênio e aeração")
 
-    if "aerator_quantity_mode" not in fd:
-        fd["aerator_quantity_mode"] = "Manual"
-    if "manual_aerators" not in fd:
-        fd["manual_aerators"] = int(fd.get("number_of_units", 1))
+    st.info("A aeração é obrigatória para tilápia em tanques revestidos superintensivos. O dimensionamento considera demanda de O₂ do cultivo, temperatura, altitude, eficiência de campo e fator de segurança. O sistema também estima a operação por fase para reduzir custo energético sem perder segurança operacional.")
+
+    q1, q2, q3, q4 = st.columns(4)
+    with q1:
+        st.metric("OD alvo", "5,0–7,5 mg/L")
+    with q2:
+        st.metric("Alerta de desempenho", "< 3,5 mg/L")
+    with q3:
+        st.metric("pH operacional", "6,5–8,5")
+    with q4:
+        st.metric("Alcalinidade", "100–250 mg/L")
+
+    st.caption("Faixas de referência consolidadas para qualidade de água: CO₂ < 40 mg/L; NH₃-N com atenção a partir de 1,0 mg/L e risco severo acima de 2,0 mg/L.")
 
     c1, c2 = st.columns(2)
-
     with c1:
         fd["oxygen_demand_mg_per_kg_h"] = st.number_input(
-            "Demanda de oxigênio (mg O₂/kg/h)",
-            min_value=10.0,
-            value=float(fd["oxygen_demand_mg_per_kg_h"]),
+            "Demanda-base de oxigênio (mg O₂/kg/h)",
+            min_value=100.0,
+            value=float(fd.get("oxygen_demand_mg_per_kg_h", 550.0)),
             step=10.0,
         )
-
-        fd["aerator_hp_each"] = st.number_input(
-            "Potência de cada aerador (HP)",
-            min_value=0.1,
-            value=float(fd["aerator_hp_each"]),
-            step=0.01,
+        fd["site_altitude_m"] = st.number_input(
+            "Altitude do local (m)",
+            min_value=0.0,
+            value=float(fd.get("site_altitude_m", 0.0)),
+            step=50.0,
         )
-
-        fd["oxygen_transfer_kg_o2_hp_h"] = st.number_input(
-            "Transferência de O₂ por HP/h",
-            min_value=0.01,
-            value=float(fd["oxygen_transfer_kg_o2_hp_h"]),
-            step=0.01,
+        fd["field_efficiency_pct"] = st.number_input(
+            "Eficiência de campo (%)",
+            min_value=10.0,
+            max_value=100.0,
+            value=float(fd.get("field_efficiency_pct", 85.0)),
+            step=1.0,
         )
-
+        fd["aeration_safety_factor_pct"] = st.number_input(
+            "Fator de segurança da aeração (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(fd.get("aeration_safety_factor_pct", 20.0)),
+            step=1.0,
+        )
     with c2:
+        fd["target_do_mg_l"] = st.number_input(
+            "OD alvo operacional (mg/L)",
+            min_value=3.0,
+            max_value=10.0,
+            value=float(fd.get("target_do_mg_l", 5.0)),
+            step=0.1,
+        )
         fd["aeration_hours_per_day"] = st.number_input(
             "Horas de aeração por dia",
             min_value=0.0,
             max_value=24.0,
-            value=float(fd["aeration_hours_per_day"]),
+            value=float(fd.get("aeration_hours_per_day", 24.0)),
             step=0.5,
         )
-
         fd["electricity_price_kwh"] = st.number_input(
             "Preço da energia (R$/kWh)",
             min_value=0.01,
-            value=float(fd["electricity_price_kwh"]),
+            value=float(fd.get("electricity_price_kwh", 0.45)),
             step=0.05,
         )
 
-        fd["aerator_quantity_mode"] = st.selectbox(
-            "Modo de definição da quantidade de aeradores",
-            ["Automático", "Manual"],
-            index=1 if fd.get("aerator_quantity_mode", "Manual") == "Manual" else 0,
-        )
-
-        if fd["aerator_quantity_mode"] == "Manual":
-            fd["manual_aerators"] = st.number_input(
-                "Quantidade de aeradores a instalar",
-                min_value=1,
-                value=int(fd.get("manual_aerators", fd.get("number_of_units", 1))),
-                step=1,
-            )
-        else:
-            st.info("No modo automático, o sistema calcula a quantidade mínima necessária.")
-
-    st.markdown(
-        "Sugestão para aerador chafariz: usar 1 aerador por tanque quando esse for o critério operacional do projeto."
+    fd["aeration_power_mode"] = st.selectbox(
+        "Modo de operação da aeração ao longo do ciclo",
+        ["Potência modulada por fase", "Potência fixa no ciclo inteiro"],
+        index=0 if fd.get("aeration_power_mode", "Potência modulada por fase") == "Potência modulada por fase" else 1,
     )
+    if fd["aeration_power_mode"] == "Potência modulada por fase":
+        fd["aeration_control_strategy"] = st.selectbox(
+            "Estratégia de controle da potência",
+            ["Automático", "Inversor de frequência", "Acionamento por etapas", "Híbrido"],
+            index=["Automático", "Inversor de frequência", "Acionamento por etapas", "Híbrido"].index(fd.get("aeration_control_strategy", "Automático") if fd.get("aeration_control_strategy", "Automático") in ["Automático", "Inversor de frequência", "Acionamento por etapas", "Híbrido"] else "Automático"),
+        )
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            fd["blower_min_operational_pct"] = st.number_input("Mínimo operacional sopradores (%)", min_value=10.0, max_value=100.0, value=float(fd.get("blower_min_operational_pct", 35.0)), step=1.0)
+        with p2:
+            fd["fountain_min_operational_pct"] = st.number_input("Mínimo operacional chafariz (%)", min_value=10.0, max_value=100.0, value=float(fd.get("fountain_min_operational_pct", 50.0)), step=1.0)
+        with p3:
+            fd["paddle_min_operational_pct"] = st.number_input("Mínimo operacional pás (%)", min_value=10.0, max_value=100.0, value=float(fd.get("paddle_min_operational_pct", 50.0)), step=1.0)
+
+    fd["aeration_mode"] = st.selectbox(
+        "Modo de aeração",
+        ["Automático", "Manual"],
+        index=0 if fd.get("aeration_mode", "Automático") == "Automático" else 1,
+    )
+
+    if fd["aeration_mode"] == "Automático":
+        fd["automatic_aeration_technology"] = st.selectbox(
+            "Tecnologia automática",
+            ["Chafariz", "Pás", "Soprador"],
+            index=["Chafariz", "Pás", "Soprador"].index(fd.get("automatic_aeration_technology", "Chafariz")),
+        )
+        if fd["automatic_aeration_technology"] == "Soprador":
+            fd["blower_type"] = st.selectbox(
+                "Tipo de soprador",
+                ["Automático", "Radial", "Lobular"],
+                index=["Automático", "Radial", "Lobular"].index(fd.get("blower_type", "Automático")),
+            )
+            fd["diffusion_efficiency_pct"] = st.number_input(
+                "Eficiência efetiva de transferência do sistema de difusão (%)",
+                min_value=1.0,
+                max_value=100.0,
+                value=float(fd.get("diffusion_efficiency_pct", 12.0)),
+                step=1.0,
+            )
+    else:
+        st.caption("No modo manual, o sistema permite combinar tecnologias. A recomendação automática continuará visível abaixo como referência técnica.")
+        m1, m2 = st.columns(2)
+        with m1:
+            fd["manual_use_fountain"] = st.checkbox("Ativar chafariz", value=bool(fd.get("manual_use_fountain", True)))
+            if fd["manual_use_fountain"]:
+                fountain_models = _model_options(FOUNTAIN_LIBRARY)
+                current = fd.get("manual_fountain_model", fountain_models[0])
+                fd["manual_fountain_model"] = st.selectbox("Modelo de chafariz", fountain_models, index=fountain_models.index(current) if current in fountain_models else 0)
+                fd["manual_fountain_qty"] = st.number_input("Quantidade de chafarizes", min_value=0, value=int(fd.get("manual_fountain_qty", 1)), step=1)
+
+            fd["manual_use_paddlewheel"] = st.checkbox("Ativar aerador de pás", value=bool(fd.get("manual_use_paddlewheel", False)))
+            if fd["manual_use_paddlewheel"]:
+                paddle_models = _model_options(PADDLEWHEEL_LIBRARY)
+                current = fd.get("manual_paddle_model", paddle_models[0])
+                fd["manual_paddle_model"] = st.selectbox("Modelo de pás", paddle_models, index=paddle_models.index(current) if current in paddle_models else 0)
+                fd["manual_paddle_qty"] = st.number_input("Quantidade de aeradores de pás", min_value=0, value=int(fd.get("manual_paddle_qty", 1)), step=1)
+
+        with m2:
+            fd["manual_use_radial"] = st.checkbox("Ativar soprador radial", value=bool(fd.get("manual_use_radial", False)))
+            if fd["manual_use_radial"]:
+                radial_models = _model_options(RADIAL_BLOWER_LIBRARY)
+                current = fd.get("manual_radial_model", radial_models[0])
+                fd["manual_radial_model"] = st.selectbox("Modelo de soprador radial", radial_models, index=radial_models.index(current) if current in radial_models else 0)
+                fd["manual_radial_qty"] = st.number_input("Quantidade de sopradores radiais", min_value=0, value=int(fd.get("manual_radial_qty", 1)), step=1)
+                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%)", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_radial")
+
+            fd["manual_use_lobular"] = st.checkbox("Ativar soprador lobular", value=bool(fd.get("manual_use_lobular", False)))
+            if fd["manual_use_lobular"]:
+                lobular_models = _model_options(LOBULAR_BLOWER_LIBRARY)
+                current = fd.get("manual_lobular_model", lobular_models[0])
+                fd["manual_lobular_model"] = st.selectbox("Modelo de soprador lobular", lobular_models, index=lobular_models.index(current) if current in lobular_models else 0)
+                fd["manual_lobular_qty"] = st.number_input("Quantidade de sopradores lobulares", min_value=0, value=int(fd.get("manual_lobular_qty", 1)), step=1)
+                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%))", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_lobular")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 fd_calc = fd.copy()
-results = run_project_calculation(fd_calc)
+fd_calc["fingerling_weight_kg"] = fd["fingerling_weight_kg"] / 1000.0
+
+inp = DashboardProjectInput(**fd_calc)
+results = calculate_dashboard_project(inp)
 st.session_state.latest_results = results
 base_res = results["base"]
+alt_factor_ui = altitude_transfer_factor(fd_calc.get("site_altitude_m", 0.0))
+temp_factor_ui = surface_aeration_base_factor(fd_calc.get("water_temperature_c", 28.0))
 
 
-def render_kpi_card(
-    container,
-    title: str,
-    value: str,
-    accent: str,
-    bg: str,
-    icon: str = "●",
-    caption: str = "",
-):
-    with container:
-        st.markdown(
-            f"""
-<div class="kpi-card" style="border-left: 6px solid {accent}; border-top: 4px solid {accent}; background: linear-gradient(135deg, {bg} 0%, #ffffff 100%);">
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-        <div class="kpi-title">{title}</div>
-        <div style="font-size:24px; line-height:1;">{icon}</div>
-    </div>
-    <div class="kpi-value">{value}</div>
-    <div class="kpi-caption">{caption}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+with tab1:
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.subheader("Sugestão operacional do sistema")
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        st.metric("Ciclo biológico do lote", f"{num(base_res.get('estimated_cycle_days'), 0)} dias")
+    with s2:
+        st.metric("Primeira receita após", f"{num(base_res.get('production_schedule', {}).get('first_harvest_after_months'), 1)} meses")
+    with s3:
+        st.metric("Tanques informados", f"{int(fd.get('number_of_units', 0))}")
+    with s4:
+        st.metric("Tanques mínimos sugeridos", f"{int(base_res.get('production_schedule', {}).get('minimum_units_suggested', fd.get('number_of_units', 1)))}")
 
+    csum1, csum2 = st.columns(2)
+    with csum1:
+        st.write(f"**Status operacional:** {base_res.get('production_schedule', {}).get('status', '-')}")
+        st.write(f"**Período de rampa até a 1ª receita:** {num(base_res.get('production_schedule', {}).get('warmup_months_without_revenue'), 1)} mês(es)")
+        st.write(f"**Intervalo real entre despescas em regime:** {num(base_res.get('production_schedule', {}).get('actual_interval_months_with_informed_units'), 2)} mês(es)")
+        st.write(f"**Estratégia:** {base_res.get('production_schedule', {}).get('production_strategy', '-')}")
+        st.write(f"**Critério:** {base_res.get('production_schedule', {}).get('scheduling_basis', '-')}")
+    with csum2:
+        st.write(f"**Biomassa por tanque:** {num(base_res.get('final_biomass_per_tank_kg'))} kg")
+        st.write(f"**Produção no 1º ano (com rampa):** {num(base_res.get('production_schedule', {}).get('production_year1_kg'))} kg")
+        st.write(f"**Peixes colhidos por tanque:** {num(base_res.get('fish_harvested_per_tank'), 0)}")
+        st.write(f"**Volume por tanque:** {num(base_res.get('geometry', {}).get('unit_volume_m3'))} m³")
+        st.write(f"**Área superficial por tanque:** {num(base_res.get('geometry', {}).get('surface_area_m2'))} m²")
+    st.info(base_res.get('production_schedule', {}).get('recommendation', ''))
+    if base_res.get("geometry_warning"):
+        st.warning(base_res["geometry_warning"])
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab4:
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.subheader("Síntese de aeração")
+    a1, a2, a3, a4 = st.columns(4)
+    with a1:
+        st.metric("Demanda de O₂ / tanque", f"{num(base_res.get('oxygen_demand_per_tank_kg_h'))} kg/h")
+    with a2:
+        st.metric("Demanda total de O₂", f"{num(base_res.get('oxygen_demand_kg_h'))} kg/h")
+    with a3:
+        st.metric("Oferta instalada de O₂", f"{num(base_res.get('installed_oxygen_supply_kg_h'))} kg/h")
+    with a4:
+        st.metric("Equipamentos instalados", f"{int(base_res.get('required_aerators', 0))}")
+
+    r1, r2 = st.columns(2)
+    with r1:
+        st.write(f"**Tecnologia adotada:** {base_res.get('selected_aeration_technology', '-')}")
+        st.write(f"**Modelo adotado:** {base_res.get('selected_aeration_model', '-')}")
+        st.write(f"**Potência instalada total:** {num(base_res.get('peak_installed_power_kw'))} kW")
+        st.write(f"**Potência média utilizada no ciclo:** {num(base_res.get('average_active_power_kw'))} kW")
+        st.write(f"**Estratégia de operação:** {base_res.get('aeration_operation_mode', '-')}")
+    with r2:
+        st.write(f"**Estratégia de controle sugerida:** {base_res.get('aeration_control_strategy', '-')}")
+        st.write(f"**Equipamento de controle recomendado:** {base_res.get('aeration_control_equipment', '-')}")
+        st.write(f"**Custo da aeração (potência fixa):** {brl(base_res.get('aeration_energy_cost_cycle_fixed_power'))}")
+        st.write(f"**Custo da aeração (estratégia adotada):** {brl(base_res.get('aeration_energy_cost_cycle'))}")
+        st.write(f"**Economia estimada no ciclo:** {brl(base_res.get('aeration_savings_cycle_rs'))} ({num(base_res.get('aeration_savings_cycle_pct'),1)}%)")
+    st.caption(base_res.get('aeration_control_note', ''))
+
+    if base_res.get("selected_aeration_warning"):
+        st.warning(base_res["selected_aeration_warning"])
+
+    det = base_res.get("aeration_details", {})
+    if det:
+        st.markdown("**Sugestão técnica de aeração**")
+        if isinstance(det, dict) and det.get("technology") == "Soprador":
+            st.write(f"- **Família sugerida:** {det.get('blower_family', '-')}")
+            st.write(f"- **Modelo sugerido:** {det.get('model', '-')}")
+            st.write(f"- **Quantidade total:** {int(det.get('qty_system', 0))}")
+            st.write(f"- **Capacidade efetiva por soprador:** {num(det.get('effective_oxygen_capacity_each_kg_h'))} kg O₂/h")
+            st.write(f"- **Oferta total instalada:** {num(det.get('installed_supply_total_kg_h'))} kg O₂/h")
+            st.write(f"- **Potência unitária:** {num(det.get('power_kw_each'))} kW")
+            st.write(f"- **Vazão unitária:** {num(det.get('airflow_m3_h_each'),0)} m³/h")
+            st.write(f"- **Pressão nominal:** {num(det.get('pressure_mbar'),0)} mbar")
+        elif isinstance(det, dict) and "rows" in det and det["rows"]:
+            detalhe_df = pd.DataFrame(det["rows"])
+            detalhe_df = detalhe_df.rename(columns={"tecnologia": "Tecnologia", "modelo": "Modelo", "quantidade": "Quantidade"})
+            st.dataframe(detalhe_df, use_container_width=True)
+        elif isinstance(det, dict):
+            oferta_tanque = det.get("installed_supply_per_tank_kg_h", 0.0)
+            demanda_tanque = base_res.get("oxygen_demand_per_tank_kg_h", 0.0)
+            margem = ((oferta_tanque / demanda_tanque) - 1.0) * 100.0 if demanda_tanque > 0 else 0.0
+            st.write(f"- **Modelo sugerido:** {det.get('model', '-')}")
+            st.write(f"- **Quantidade por tanque:** {int(det.get('qty_per_tank', 0))}")
+            st.write(f"- **Quantidade total:** {int(base_res.get('required_aerators', 0))}")
+            st.write(f"- **Oferta por tanque:** {num(oferta_tanque)} kg O₂/h")
+            st.write(f"- **Demanda por tanque:** {num(demanda_tanque)} kg O₂/h")
+            st.write(f"- **Margem de segurança estimada:** {num(margem,1)}%")
+            st.write(f"- **Máximo sugerido por tanque:** {int(det.get('max_units_per_tank', 0))}")
+            st.write(f"- **Situação:** {'Viável' if det.get('feasible', False) else 'Inadequada para este arranjo'}")
+
+    aer_phase = pd.DataFrame(base_res.get("aeration_phase_operation", []))
+    if not aer_phase.empty:
+        st.markdown("**Operação da aeração por fase**")
+        aer_phase_view = aer_phase.rename(columns={"% de uso da capacidade": "% de modulação sugerida", "Equipamentos ativos": "Equipamentos operando", "Potência ativa da fase (kW)": "Potência média ativa da fase (kW)"})
+        st.dataframe(aer_phase_view, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab3:
+    phase_summary = pd.DataFrame(base_res.get("feeding_plan", []))
+    if not phase_summary.empty:
+        st.markdown('<div class="section-box">', unsafe_allow_html=True)
+        st.subheader("Duração estimada das fases")
+        st.caption("Esses tempos são calculados automaticamente com base nos dados informados no projeto. Não são valores fixos.")
+
+        metric_cols = st.columns(len(phase_summary) + 1)
+        for idx, (_, row) in enumerate(phase_summary.iterrows()):
+            with metric_cols[idx]:
+                st.metric(str(row.get("phase_name", f"Fase {idx+1}")), f"{int(round(row.get('days_in_phase', 0)))} dias")
+        with metric_cols[-1]:
+            st.metric("Ciclo estimado", f"{int(round(base_res.get('estimated_cycle_days', 0)))} dias")
+
+        view_cols = [
+            "phase_name",
+            "weight_range",
+            "days_in_phase",
+            "cumulative_days_end",
+            "cycle_share_pct",
+            "phase_daily_growth_g",
+            "phase_fcr",
+        ]
+        phase_summary_view = phase_summary[[c for c in view_cols if c in phase_summary.columns]].copy()
+        rename_map = {
+            "phase_name": "Fase",
+            "weight_range": "Faixa de peso",
+            "days_in_phase": "Duração estimada (dias)",
+            "cumulative_days_end": "Dias acumulados até o fim",
+            "cycle_share_pct": "% do ciclo",
+            "phase_daily_growth_g": "Ganho médio da fase (g/peixe/dia)",
+            "phase_fcr": "FCR da fase",
+        }
+        phase_summary_view = phase_summary_view.rename(columns=rename_map)
+        for col in ["Duração estimada (dias)", "Dias acumulados até o fim"]:
+            if col in phase_summary_view.columns:
+                phase_summary_view[col] = phase_summary_view[col].round(0).astype(int)
+        for col in ["% do ciclo", "Ganho médio da fase (g/peixe/dia)", "FCR da fase"]:
+            if col in phase_summary_view.columns:
+                phase_summary_view[col] = phase_summary_view[col].round(2)
+        st.dataframe(phase_summary_view, use_container_width=True)
+        st.info("Use essa tabela como balizador de biometria. Se o peixe real estiver abaixo do peso esperado ao fim de uma fase, revise manejo alimentar, densidade, temperatura, oxigênio e qualidade de água.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 with tab5:
     st.subheader("Indicadores principais")
 
-    st.markdown("#### Salvamento do projeto")
-    save_name_col, save_button_col = st.columns([2.2, 1.0])
-    with save_name_col:
-        fd["project_name"] = st.text_input(
-            "Nome do projeto para salvar",
-            key="save_project_name_dashboard",
-            help="Esse nome aparecerá na lista de projetos salvos e na geração dos relatórios.",
-        )
-        st.session_state.dash_form_data["project_name"] = fd["project_name"]
-
-    with save_button_col:
-        st.markdown("<div style='height: 1.85rem;'></div>", unsafe_allow_html=True)
-        if st.button("Salvar projeto completo", type="primary"):
-            st.session_state.dash_form_data["project_name"] = fd.get("project_name", "Projeto")
+    save_col1, save_col2 = st.columns([1.2, 2.8])
+    with save_col1:
+        if st.button("Salvar projeto completo", type="primary", key="btn_salvar_projeto_completo"):
             payload = build_project_payload(
                 st.session_state.dash_form_data,
                 results,
                 st.session_state.current_project_id,
             )
-            project_id = _save_project_active(payload, st.session_state.current_project_id)
-            st.session_state.current_project_id = project_id
-            st.session_state.selected_project_id = project_id
-            st.success(f"Projeto salvo: {fd.get('project_name', project_id)}")
+            try:
+                project_id = _save_project_active(payload, st.session_state.current_project_id)
+                st.session_state.current_project_id = project_id
+                st.session_state.selected_project_id = project_id
+                st.session_state.latest_results = results
+                st.success(f"Projeto salvo com resultados: {project_id}")
+            except Exception as exc:
+                st.error(f"Erro ao salvar projeto: {exc}")
 
-    if st.session_state.current_project_id:
-        st.caption(
-            f"Projeto ativo: {fd.get('project_name', 'Projeto')} · ID interno: {st.session_state.current_project_id}"
-        )
-    else:
-        st.caption("Projeto ainda não salvo. Defina o nome acima e use o botão ao lado para registrar este cenário.")
+    with save_col2:
+        if st.session_state.current_project_id:
+            st.caption(f"Projeto ativo: {st.session_state.current_project_id}")
+        else:
+            st.caption("Projeto ainda não salvo. Use o botão ao lado para registrar este cenário.")
 
     c1, c2, c3, c4 = st.columns(4)
-    render_kpi_card(c1, "Produção/ciclo", f"{num(base_res.get('production_per_cycle_kg'))} kg", "#2f6fdf", "#eef4ff", "📦", "Volume produtivo do ciclo")
-    render_kpi_card(c2, "Receita/ciclo", brl(base_res.get("revenue_cycle")), "#2e7d32", "#eef8ef", "💰", "Receita bruta estimada")
-    render_kpi_card(c3, "Margem/ciclo", brl(base_res.get("gross_margin_cycle")), "#1b5e20", "#edf7ed", "📈", "Resultado operacional do ciclo")
-    render_kpi_card(c4, "Payback estimado", num(base_res.get("payback_years"), 2) + " anos" if base_res.get("payback_years") is not None else "-", "#5d4037", "#f5efec", "⏱️", "Retorno estimado do investimento")
+
+    cards = [
+        ("Produção por ciclo biológico", f"{num(base_res.get('production_per_cycle_kg'))} kg"),
+        ("Ração/ciclo", f"{num(base_res.get('feed_consumption_cycle_kg'))} kg"),
+        ("Ração/ano", f"{num(base_res.get('feed_consumption_year_kg'))} kg"),
+        ("Dias do ciclo biológico", num(base_res.get("estimated_cycle_days"), 0)),
+    ]
+
+    for col, (title, value) in zip([c1, c2, c3, c4], cards):
+        with col:
+            st.markdown(
+                f"""
+<div class="kpi-card">
+    <div class="kpi-title">{title}</div>
+    <div class="kpi-value">{value}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
 
     c5, c6, c7, c8 = st.columns(4)
-    energia_total_ciclo = float(base_res.get("electricity_cost_cycle_effective", 0.0) or 0.0) + float(base_res.get("aeration_energy_cost_cycle", 0.0) or 0.0)
-    render_kpi_card(c5, "Custo ração/ciclo", brl(base_res.get("feed_cost_cycle")), "#8d6e63", "#f6efeb", "🟧", "Principal componente do OPEX")
-    render_kpi_card(c6, "Custo alevino/ciclo", brl(base_res.get("fingerling_cost_cycle")), "#556b2f", "#f1f6e9", "🐠", "Reposição biológica do ciclo")
-    render_kpi_card(c7, "Mão de obra/ciclo", brl(base_res.get("labor_cost_cycle_effective")), "#c0392b", "#fbefed", "👷", "Equipe operacional considerada")
-    render_kpi_card(c8, "Energia elétrica/ciclo", brl(energia_total_ciclo), "#1565c0", "#edf4fd", "⚡", "Energia adicional + aeração")
+
+    cards2 = [
+        ("Margem/ciclo", brl(base_res.get("gross_margin_cycle"))),
+        (
+            "FCR do plano",
+            num(base_res.get("implied_fcr")) if base_res.get("implied_fcr") is not None else "-",
+        ),
+        ("Custo ração/ciclo", brl(base_res.get("feed_cost_cycle"))),
+        ("OPEX/ciclo", brl(base_res.get("opex_cycle"))),
+    ]
+
+    for col, (title, value) in zip([c5, c6, c7, c8], cards2):
+        with col:
+            st.markdown(
+                f"""
+<div class="kpi-card">
+    <div class="kpi-title">{title}</div>
+    <div class="kpi-value">{value}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
 
     c9, c10, c11, c12 = st.columns(4)
-    render_kpi_card(c9, "OPEX/ciclo", brl(base_res.get("opex_cycle")), "#37474f", "#eef2f3", "🧾", "Custo operacional total")
-    render_kpi_card(c10, "Custo por kg", brl(base_res.get("cost_per_kg")) + "/kg", "#1e6091", "#eef5f9", "⚖️", "Eficiência econômica unitária")
-    render_kpi_card(c11, "FCR implícito", num(base_res.get("implied_fcr")) if base_res.get("implied_fcr") is not None else "-", "#6d4c41", "#f7f0ec", "🎯", "Conversão alimentar do ciclo")
-    render_kpi_card(c12, "Aeradores instalados", num(base_res.get("required_aerators"), 0), "#1976d2", "#edf5ff", "🌬️", "Capacidade operacional instalada")
+
+    cards3 = [
+        ("Receita/ciclo", brl(base_res.get("revenue_cycle"))),
+        ("Custo alevino/ciclo", brl(base_res.get("fingerling_cost_cycle"))),
+        ("Custo aeração/ciclo", brl(base_res.get("aeration_energy_cost_cycle"))),
+        ("Aeradores instalados", num(base_res.get("required_aerators"), 0)),
+    ]
+
+    for col, (title, value) in zip([c9, c10, c11, c12], cards3):
+        with col:
+            st.markdown(
+                f"""
+<div class="kpi-card">
+    <div class="kpi-title">{title}</div>
+    <div class="kpi-value">{value}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+    aeration_info_cols = st.columns(4)
+    aeration_info = [
+        ("Fator base da aeração", num(temp_factor_ui, 2)),
+        ("Fator altitude", num(alt_factor_ui, 2)),
+        ("Eficiência de campo", f"{num(fd_calc.get('field_efficiency_pct', 85.0), 0)}%"),
+        ("OD alvo", f"{num(fd_calc.get('target_do_mg_l', 5.0), 1)} mg/L"),
+    ]
+    for col, (title, value) in zip(aeration_info_cols, aeration_info):
+        with col:
+            st.markdown(
+                f"""
+<div class="kpi-card">
+    <div class="kpi-title">{title}</div>
+    <div class="kpi-value">{value}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
 
     schedule = base_res.get("production_schedule", {})
     if schedule:
@@ -1101,279 +1288,111 @@ with tab5:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-    if base_res.get("economic_model_mode") == "Fixo + por tanque":
-        st.markdown('<div class="section-box">', unsafe_allow_html=True)
-        st.subheader("Estrutura econômica: fixo + por tanque")
-        e1, e2, e3, e4 = st.columns(4)
-        econ_cards = [
-            ("Energia adicional/ciclo", brl(base_res.get("electricity_cost_cycle_effective"))),
-            ("Mão de obra/ciclo", brl(base_res.get("labor_cost_cycle_effective"))),
-            ("Outros custos/ciclo", brl(base_res.get("other_costs_cycle_effective"))),
-            ("CAPEX considerado", brl(base_res.get("capex_total_effective"))),
-        ]
-        for col, (title, value) in zip([e1, e2, e3, e4], econ_cards):
-            with col:
-                st.markdown(
-                    f"""
-<div class="kpi-card">
-    <div class="kpi-title">{title}</div>
-    <div class="kpi-value">{value}</div>
-</div>
-""",
-                    unsafe_allow_html=True,
-                )
-        st.caption(
-            "O cálculo econômico foi montado com uma parte fixa do empreendimento e outra parte variável por tanque."
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    elif base_res.get("cost_scaling_mode") == "Escalonar pelo nº de tanques":
-        st.markdown('<div class="section-box">', unsafe_allow_html=True)
-        st.subheader("Escalonamento econômico aplicado")
-        e1, e2, e3, e4 = st.columns(4)
-        econ_cards = [
-            ("Fator de escala", num(base_res.get("cost_scale_factor"), 3)),
-            ("Energia extra/ciclo", brl(base_res.get("electricity_cost_cycle_effective"))),
-            ("Mão de obra/ciclo", brl(base_res.get("labor_cost_cycle_effective"))),
-            ("CAPEX considerado", brl(base_res.get("capex_total_effective"))),
-        ]
-        for col, (title, value) in zip([e1, e2, e3, e4], econ_cards):
-            with col:
-                st.markdown(
-                    f"""
-<div class="kpi-card">
-    <div class="kpi-title">{title}</div>
-    <div class="kpi-value">{value}</div>
-</div>
-""",
-                    unsafe_allow_html=True,
-                )
-        st.caption(
-            f"Custos base referenciados em {int(base_res.get('cost_reference_units', 1))} tanque(s) e recalculados para {int(fd['number_of_units'])} tanque(s)."
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
     df_growth = pd.DataFrame(base_res.get("growth_curve", []))
     df_feed = pd.DataFrame(base_res.get("feeding_plan", []))
     df_cost = pd.DataFrame(base_res.get("cost_curve", []))
 
     if not df_feed.empty:
         st.markdown('<div class="section-box">', unsafe_allow_html=True)
-        st.subheader("Resumo visual da operação")
+        st.subheader("Tabela do plano alimentar por fase")
+        st.caption("Para alterar FCR, use a aba Alimentação avançada.")
+        columns = [
+            "phase_name",
+            "weight_range",
+            "days_in_phase",
+            "cumulative_days_end",
+            "cycle_share_pct",
+            "protein_percent",
+            "pellet_mm",
+            "feed_price_per_kg",
+            "phase_fcr",
+            "biomass_gain_phase_kg",
+            "feed_phase_kg",
+            "feed_phase_cost",
+        ]
+        existing = [c for c in columns if c in df_feed.columns]
+        df_feed_view = df_feed[existing].rename(columns={
+            "phase_name": "Fase",
+            "weight_range": "Faixa de peso",
+            "days_in_phase": "Dias da fase",
+            "cumulative_days_end": "Dias acumulados",
+            "cycle_share_pct": "% do ciclo",
+            "protein_percent": "PB (%)",
+            "pellet_recommendation": "Granulometria recomendada",
+            "pellet_mm": "Pellet base (mm)",
+            "feed_price_per_kg": "Preço/kg",
+            "phase_fcr": "FCR",
+            "biomass_gain_phase_kg": "Ganho de biomassa (kg)",
+            "feed_phase_kg": "Ração da fase (kg)",
+            "feed_phase_cost": "Custo da fase (R$)",
+        })
+        for col in ["Dias da fase", "Dias acumulados"]:
+            if col in df_feed_view.columns:
+                df_feed_view[col] = df_feed_view[col].round(0).astype(int)
+        for col in ["% do ciclo", "PB (%)", "Preço/kg", "FCR", "Ganho de biomassa (kg)", "Ração da fase (kg)", "Custo da fase (R$)"]:
+            if col in df_feed_view.columns:
+                df_feed_view[col] = df_feed_view[col].round(2)
+        st.dataframe(df_feed_view, use_container_width=True)
+        st.caption("Na fase 1, a granulometria deve evoluir conforme a abertura de boca do peixe. Para 1–20 g, a recomendação prática é trabalhar com faixa progressiva, e não com um único pellet fixo.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        cost_breakdown = pd.DataFrame(
-            [
-                {"categoria": "Ração", "valor": float(base_res.get("feed_cost_cycle", 0.0))},
-                {"categoria": "Alevinos", "valor": float(base_res.get("fingerling_cost_cycle", 0.0))},
-                {"categoria": "Energia adicional", "valor": float(base_res.get("electricity_cost_cycle_effective", 0.0))},
-                {"categoria": "Mão de obra", "valor": float(base_res.get("labor_cost_cycle_effective", 0.0))},
-                {"categoria": "Outros custos", "valor": float(base_res.get("other_costs_cycle_effective", 0.0))},
-                {"categoria": "Aeração", "valor": float(base_res.get("aeration_energy_cost_cycle", 0.0))},
-            ]
-        )
-        cost_breakdown = cost_breakdown[cost_breakdown["valor"] > 0].copy()
+    if not df_growth.empty and "day" in df_growth.columns and "weight_g" in df_growth.columns:
+        st.markdown('<div class="section-box">', unsafe_allow_html=True)
+        st.subheader("Crescimento ao longo do ciclo")
+        fig1 = plt.figure(figsize=(8, 4))
+        plt.plot(df_growth["day"], df_growth["weight_g"])
+        plt.xlabel("Dia")
+        plt.ylabel("Peso (g)")
+        plt.tight_layout()
+        st.pyplot(fig1)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        vis1, vis2 = st.columns(2)
+    if not df_growth.empty and "day" in df_growth.columns and "biomass_kg" in df_growth.columns:
+        st.markdown('<div class="section-box">', unsafe_allow_html=True)
+        st.subheader("Biomassa ao longo do ciclo")
+        fig2 = plt.figure(figsize=(8, 4))
+        plt.plot(df_growth["day"], df_growth["biomass_kg"])
+        plt.xlabel("Dia")
+        plt.ylabel("Biomassa (kg)")
+        plt.tight_layout()
+        st.pyplot(fig2)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        with vis1:
-            if not df_growth.empty and "day" in df_growth.columns and "weight_g" in df_growth.columns:
-                fig_growth = px.line(
-                    df_growth,
-                    x="day",
-                    y="weight_g",
-                    markers=True,
-                    title="Crescimento dos peixes ao longo do ciclo",
-                    labels={"day": "Dia", "weight_g": "Peso (g)"},
-                )
-                fig_growth.update_traces(line=dict(width=4), marker=dict(size=8))
-                fig_growth.update_layout(
-                    template="plotly_white",
-                    height=380,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                )
-                st.plotly_chart(fig_growth, use_container_width=True)
+    c13, c14 = st.columns(2)
 
-        with vis2:
-            if not df_growth.empty and "day" in df_growth.columns and "biomass_kg" in df_growth.columns:
-                fig_biomass = px.area(
-                    df_growth,
-                    x="day",
-                    y="biomass_kg",
-                    markers=True,
-                    title="Evolução da biomassa no ciclo",
-                    labels={"day": "Dia", "biomass_kg": "Biomassa (kg)"},
-                )
-                fig_biomass.update_traces(line=dict(width=3))
-                fig_biomass.update_layout(
-                    template="plotly_white",
-                    height=380,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                )
-                st.plotly_chart(fig_biomass, use_container_width=True)
+    with c13:
+        if not df_feed.empty and "phase_name" in df_feed.columns and "feed_phase_kg" in df_feed.columns:
+            st.markdown('<div class="section-box">', unsafe_allow_html=True)
+            st.subheader("Ração por fase")
+            fig3 = plt.figure(figsize=(8, 4))
+            plt.bar(df_feed["phase_name"], df_feed["feed_phase_kg"])
+            plt.xlabel("Fase")
+            plt.ylabel("Ração (kg)")
+            plt.tight_layout()
+            st.pyplot(fig3)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        vis3, vis4 = st.columns(2)
+    with c14:
+        if not df_feed.empty and "phase_name" in df_feed.columns and "feed_phase_cost" in df_feed.columns:
+            st.markdown('<div class="section-box">', unsafe_allow_html=True)
+            st.subheader("Custo por fase")
+            fig4 = plt.figure(figsize=(8, 4))
+            plt.bar(df_feed["phase_name"], df_feed["feed_phase_cost"])
+            plt.xlabel("Fase")
+            plt.ylabel("Custo (R$)")
+            plt.tight_layout()
+            st.pyplot(fig4)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        with vis3:
-            if not cost_breakdown.empty:
-                fig_opex = px.pie(
-                    cost_breakdown,
-                    names="categoria",
-                    values="valor",
-                    hole=0.58,
-                    title="Composição visual do OPEX por ciclo",
-                )
-                fig_opex.update_traces(textposition="inside", textinfo="percent+label")
-                fig_opex.update_layout(
-                    template="plotly_white",
-                    height=420,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                    legend_title_text="Categoria",
-                )
-                st.plotly_chart(fig_opex, use_container_width=True)
-
-        with vis4:
-            waterfall_df = pd.DataFrame(
-                [
-                    {"etapa": "Receita", "valor": float(base_res.get("revenue_cycle", 0.0)), "tipo": "relative"},
-                    {"etapa": "Ração", "valor": -float(base_res.get("feed_cost_cycle", 0.0)), "tipo": "relative"},
-                    {"etapa": "Alevinos", "valor": -float(base_res.get("fingerling_cost_cycle", 0.0)), "tipo": "relative"},
-                    {"etapa": "Energia", "valor": -float(base_res.get("electricity_cost_cycle_effective", 0.0)), "tipo": "relative"},
-                    {"etapa": "Mão de obra", "valor": -float(base_res.get("labor_cost_cycle_effective", 0.0)), "tipo": "relative"},
-                    {"etapa": "Outros", "valor": -float(base_res.get("other_costs_cycle_effective", 0.0)), "tipo": "relative"},
-                    {"etapa": "Aeração", "valor": -float(base_res.get("aeration_energy_cost_cycle", 0.0)), "tipo": "relative"},
-                    {"etapa": "Margem", "valor": 0.0, "tipo": "total"},
-                ]
-            )
-            fig_margin = go.Figure(
-                go.Waterfall(
-                    name="Margem por ciclo",
-                    orientation="v",
-                    measure=waterfall_df["tipo"],
-                    x=waterfall_df["etapa"],
-                    y=waterfall_df["valor"],
-                    connector={"line": {"width": 1}},
-                )
-            )
-            fig_margin.update_layout(
-                template="plotly_white",
-                title="Formação da margem por ciclo",
-                height=420,
-                margin=dict(l=20, r=20, t=60, b=20),
-                title_x=0.02,
-                showlegend=False,
-            )
-            st.plotly_chart(fig_margin, use_container_width=True)
-
-        vis5, vis6 = st.columns(2)
-
-        with vis5:
-            if "phase_name" in df_feed.columns and "feed_phase_kg" in df_feed.columns:
-                fig_feed = px.bar(
-                    df_feed,
-                    x="feed_phase_kg",
-                    y="phase_name",
-                    orientation="h",
-                    text="feed_phase_kg",
-                    title="Consumo de ração por fase",
-                    labels={"feed_phase_kg": "Ração (kg)", "phase_name": "Fase"},
-                )
-                fig_feed.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-                fig_feed.update_layout(
-                    template="plotly_white",
-                    height=380,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                    yaxis=dict(categoryorder="array", categoryarray=list(df_feed["phase_name"])[::-1]),
-                )
-                st.plotly_chart(fig_feed, use_container_width=True)
-
-        with vis6:
-            if "phase_name" in df_feed.columns and "feed_phase_cost" in df_feed.columns:
-                fig_phase_cost = px.bar(
-                    df_feed,
-                    x="phase_name",
-                    y="feed_phase_cost",
-                    text="feed_phase_cost",
-                    title="Custo de ração por fase",
-                    labels={"phase_name": "Fase", "feed_phase_cost": "Custo (R$)"},
-                )
-                fig_phase_cost.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-                fig_phase_cost.update_layout(
-                    template="plotly_white",
-                    height=380,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                )
-                st.plotly_chart(fig_phase_cost, use_container_width=True)
-
-        if not df_cost.empty and "day" in df_cost.columns and "cumulative_feed_cost" in df_cost.columns:
-            fig_cost_curve = px.area(
-                df_cost,
-                x="day",
-                y="cumulative_feed_cost",
-                markers=True,
-                title="Custo acumulado da ração",
-                labels={"day": "Dia", "cumulative_feed_cost": "Custo acumulado (R$)"},
-            )
-            fig_cost_curve.update_traces(line=dict(width=3))
-            fig_cost_curve.update_layout(
-                template="plotly_white",
-                height=400,
-                margin=dict(l=20, r=20, t=60, b=20),
-                title_x=0.02,
-            )
-            st.plotly_chart(fig_cost_curve, use_container_width=True)
-
-        if schedule.get("production_strategy") == "Escalonada":
-            harvests_per_year = float(schedule.get("harvests_per_year", 0) or 0)
-            if harvests_per_year > 0:
-                months = [
-                    "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-                    "Jul", "Ago", "Set", "Out", "Nov", "Dez"
-                ]
-                production_month = [0.0] * 12
-                full_harvests = int(harvests_per_year)
-                for i in range(min(full_harvests, 12)):
-                    production_month[i] = float(schedule.get("production_per_harvest_kg", 0.0))
-                df_month = pd.DataFrame({"mês": months, "produção_kg": production_month})
-
-                fig_month = px.bar(
-                    df_month,
-                    x="mês",
-                    y="produção_kg",
-                    text="produção_kg",
-                    title="Distribuição visual da produção mensal",
-                    labels={"mês": "Mês", "produção_kg": "Produção (kg)"},
-                )
-                fig_month.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-                fig_month.update_layout(
-                    template="plotly_white",
-                    height=380,
-                    margin=dict(l=20, r=20, t=60, b=20),
-                    title_x=0.02,
-                )
-                st.plotly_chart(fig_month, use_container_width=True)
-
-        with st.expander("Tabela detalhada do plano alimentar por fase", expanded=False):
-            st.caption("Para alterar FCR, use a aba Alimentação avançada.")
-            columns = [
-                "phase_name",
-                "weight_range",
-                "days_in_phase",
-                "protein_percent",
-                "pellet_mm",
-                "feed_price_per_kg",
-                "phase_fcr",
-                "biomass_gain_phase_kg",
-                "feed_phase_kg",
-                "feed_phase_cost",
-            ]
-            existing = [c for c in columns if c in df_feed.columns]
-            st.dataframe(df_feed[existing], use_container_width=True)
-
+    if not df_cost.empty and "day" in df_cost.columns and "cumulative_feed_cost" in df_cost.columns:
+        st.markdown('<div class="section-box">', unsafe_allow_html=True)
+        st.subheader("Custo acumulado da ração")
+        fig5 = plt.figure(figsize=(8, 4))
+        plt.plot(df_cost["day"], df_cost["cumulative_feed_cost"])
+        plt.xlabel("Dia")
+        plt.ylabel("Custo acumulado da ração (R$)")
+        plt.tight_layout()
+        st.pyplot(fig5)
         st.markdown("</div>", unsafe_allow_html=True)
 
 with tab6:
@@ -1395,103 +1414,45 @@ with tab6:
 
     st.info(f"Pasta de saída atual: {save_dir}")
 
-    current_project_name = fd.get("project_name", "Projeto")
-    project_slug = _safe_filename(current_project_name)
-    profile_slug_map = {
-        "Produtor": "produtor",
-        "Técnico": "tecnico",
-        "Banco/Financiamento": "banco_financiamento",
-    }
-    profile_slug = profile_slug_map.get(report_profile, "relatorio")
-    final_base_name = f"{project_slug}_{profile_slug}"
+    col1, col2, col3 = st.columns(3)
 
-    delivery_mode = st.radio(
-        "Entrega dos relatórios",
-        ["Baixar neste computador", "Salvar na pasta outputs"],
-        horizontal=True,
-        index=0 if _use_supabase_storage() else 1,
-        help="Na nuvem, o ideal é baixar os relatórios diretamente para o computador do usuário.",
-    )
+    with col1:
+        if st.button("Gerar Relatório (Markdown)"):
+            md_path = save_dir / f"{output_name}_completo.md"
+            md_path.write_text(professional_report, encoding="utf-8")
+            st.success(f"Relatório Markdown salvo em: {md_path}")
 
-    st.caption(
-        f"Nome base desta geração: {final_base_name}_completo.*"
-    )
+    with col2:
+        if st.button("Gerar Relatório (DOCX)"):
+            md_path = save_dir / f"{output_name}_completo.md"
+            md_path.write_text(professional_report, encoding="utf-8")
 
-    if delivery_mode == "Baixar neste computador":
-        st.info("Modo recomendado para a nuvem: os relatórios serão baixados diretamente, sem ficarem salvos no servidor.")
-
-        md_bytes = professional_report.encode("utf-8")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_output_dir = Path(tmpdir)
-            tmp_docx_path = tmp_output_dir / f"{final_base_name}_completo.docx"
-            export_dashboard_report_to_docx(
-                results,
-                tmp_docx_path,
-                fd.get("project_name", "Projeto"),
-                fd.get("author_name", ""),
-                report_profile,
+            docx_path = save_dir / f"{output_name}_completo.docx"
+            export_markdown_to_docx(
+                md_path,
+                docx_path,
+                inp.project_name,
+                inp.author_name,
             )
-            docx_bytes = _read_file_bytes(tmp_docx_path)
+            st.success(f"Relatório DOCX salvo em: {docx_path}")
 
-        dcol1, dcol2 = st.columns(2)
-        with dcol1:
-            st.download_button(
-                "Baixar Relatório (Markdown)",
-                data=md_bytes,
-                file_name=f"{final_base_name}_completo.md",
-                mime="text/markdown",
-            )
-        with dcol2:
-            st.download_button(
-                "Baixar Relatório Premium (DOCX)",
-                data=docx_bytes,
-                file_name=f"{final_base_name}_completo.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    with col3:
+        if st.button("Gerar Relatório (DOCX + PDF)"):
+            md_path = save_dir / f"{output_name}_completo.md"
+            md_path.write_text(professional_report, encoding="utf-8")
+
+            docx_path = save_dir / f"{output_name}_completo.docx"
+            export_markdown_to_docx(
+                md_path,
+                docx_path,
+                inp.project_name,
+                inp.author_name,
             )
 
-        st.caption("No modo de download direto, o PDF fica desativado por padrão na nuvem.")
-    else:
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            if st.button("Gerar Relatório (Markdown)"):
-                md_path = save_dir / f"{final_base_name}_completo.md"
-                md_path.write_text(professional_report, encoding="utf-8")
-                st.success(f"Relatório Markdown salvo em: {md_path}")
-
-        with col2:
-            if st.button("Gerar Relatório Premium (DOCX)"):
-                md_path = save_dir / f"{final_base_name}_completo.md"
-                md_path.write_text(professional_report, encoding="utf-8")
-
-                docx_path = save_dir / f"{final_base_name}_completo.docx"
-                export_dashboard_report_to_docx(
-                    results,
-                    docx_path,
-                    fd.get("project_name", "Projeto"),
-                    fd.get("author_name", ""),
-                    report_profile,
-                )
-                st.success(f"Relatório DOCX premium salvo em: {docx_path}")
-
-        with col3:
-            if st.button("Gerar Relatório Premium (DOCX + PDF)"):
-                md_path = save_dir / f"{final_base_name}_completo.md"
-                md_path.write_text(professional_report, encoding="utf-8")
-
-                docx_path = save_dir / f"{final_base_name}_completo.docx"
-                export_dashboard_report_to_docx(
-                    results,
-                    docx_path,
-                    fd.get("project_name", "Projeto"),
-                    fd.get("author_name", ""),
-                    report_profile,
-                )
-
-                try:
-                    pdf_path = export_docx_to_pdf(docx_path, save_dir)
-                    st.success(f"Relatórios salvos em: {docx_path} e {pdf_path}")
-                except Exception as e:
-                    st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
+            try:
+                pdf_path = export_docx_to_pdf(docx_path, save_dir)
+                st.success(f"Relatórios salvos em: {docx_path} e {pdf_path}")
+            except Exception as e:
+                st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)

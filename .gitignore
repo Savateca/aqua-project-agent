@@ -1,7 +1,12 @@
-venv/
+﻿venv/
+.venv/
 .env
-outputs/
-projects/
 __pycache__/
 *.pyc
-.streamlit/
+outputs/
+.streamlit/secrets.toml
+*.log
+
+projects/
+
+abrir_dashboard*.bat
