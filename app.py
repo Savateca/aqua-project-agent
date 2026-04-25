@@ -1456,3 +1456,51 @@ with tab6:
                 st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+# --- Correção visual para Streamlit Cloud: texto branco sobre fundo claro ---
+st.markdown("""
+<style>
+/* Área principal */
+main, .block-container, [data-testid="stMain"] {
+    color: #102A43 !important;
+}
+
+/* Títulos, textos e labels da área principal */
+main h1, main h2, main h3, main h4, main h5, main h6,
+main p, main span, main label,
+main [data-testid="stWidgetLabel"] *,
+main [data-testid="stMarkdownContainer"] * {
+    color: #102A43 !important;
+}
+
+/* Campos de texto e número */
+input, textarea {
+    color: #102A43 !important;
+    background-color: #FFFFFF !important;
+}
+
+/* Selectbox / caixas de seleção */
+div[data-baseweb="select"] > div {
+    background-color: #FFFFFF !important;
+    color: #102A43 !important;
+}
+
+div[data-baseweb="select"] span,
+div[data-baseweb="select"] input {
+    color: #102A43 !important;
+}
+
+/* Opções abertas do selectbox */
+div[data-baseweb="popover"] *,
+ul[role="listbox"] *,
+li[role="option"] * {
+    color: #102A43 !important;
+    background-color: #FFFFFF !important;
+}
+
+/* Number input: botões + e - */
+button[kind="secondary"] {
+    color: #102A43 !important;
+}
+</style>
+""", unsafe_allow_html=True)
