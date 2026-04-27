@@ -66,7 +66,7 @@ if BG_IMAGE_BASE64:
     background-image:
         linear-gradient(
             rgba(238, 247, 244, 0.42),
-            rgba(238, 247, 244, 0.58)
+            rgba(238, 247, 244, 0.38)
         ),
         url("data:image/png;base64,{BG_IMAGE_BASE64}") !important;
     background-size: cover !important;
@@ -101,7 +101,7 @@ st.markdown(
 }}
 
 .block-container {{
-    background: rgba(238, 247, 244, 0.70) !important;
+    background: rgba(238, 247, 244, 0.52) !important;
     border-radius: 18px !important;
     padding-top: 1.2rem !important;
     padding-bottom: 2rem !important;
