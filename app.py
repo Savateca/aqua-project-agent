@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+
+def get_image_base64(image_path: str) -> str:
+    path = Path(__file__).resolve().parent / image_path
+    if not path.exists():
+        return ""
+    return base64.b64encode(path.read_bytes()).decode()
+
 
 from aqua_project_agent_gui_dashboard_v1.calculator import (
     DEFAULT_FEEDING_CURVE,
@@ -51,127 +59,452 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
+BG_IMAGE_BASE64 = get_image_base64("assets/tilapia_scale_bg.png")
+
+if BG_IMAGE_BASE64:
+    app_background_css = f"""
+    background-image:
+        linear-gradient(
+            rgba(238, 247, 244, 0.30),
+            rgba(238, 247, 244, 0.46)
+        ),
+        url("data:image/png;base64,{BG_IMAGE_BASE64}") !important;
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+    background-attachment: fixed !important;
     """
+else:
+    app_background_css = """
+    background: linear-gradient(180deg, #eef7f5 0%, #dcefeb 100%) !important;
+    """
+
+st.markdown(
+    f"""
 <style>
-.stApp {
-    background: linear-gradient(180deg, #eef7f5 0%, #dcefeb 100%);
-}
+/* ============================================================
+   FUNDO PRINCIPAL COM TEXTURA DE ESCAMAS DA TILÁPIA
+   ============================================================ */
 
-.block-container {
-    padding-top: 1.2rem;
-    padding-bottom: 2rem;
-    max-width: 1280px;
-}
+.stApp {{
+    {app_background_css}
+}}
 
-h1, h2, h3 {
-    color: #0f4c5c;
-    font-weight: 700;
-}
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"] {{
+    background: transparent !important;
+}}
 
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0f4c5c 0%, #1b6b7a 100%);
-}
+[data-testid="stHeader"] {{
+    background: rgba(238, 247, 244, 0.54) !important;
+    backdrop-filter: blur(6px) !important;
+}}
+
+.block-container {{
+    background: rgba(238, 247, 244, 0.60) !important;
+    border-radius: 18px !important;
+    padding-top: 1.2rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1280px !important;
+}}
+
+/* ============================================================
+   TIPOGRAFIA E CONTRASTE GERAL
+   ============================================================ */
+
+main,
+main p,
+main span,
+main div,
+main li {{
+    color: #102A43 !important;
+}}
+
+h1, h2, h3, h4, h5, h6 {{
+    color: #0F2D3A !important;
+    font-weight: 800 !important;
+}}
+
+label,
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stMarkdownContainer"] li {{
+    color: #102A43 !important;
+}}
+
+[data-testid="stWidgetLabel"] {{
+    color: #334E5C !important;
+    font-weight: 800 !important;
+}}
+
+/* ============================================================
+   CAMPOS DE FORMULÁRIO — CINZA-AZULADO + CURSOR VERMELHO
+   Regras principais:
+   - sem foco: fundo cinza-azulado claro
+   - em edição/foco: fundo branco, borda verde
+   - cursor/caret de texto: vermelho
+   - texto digitado: azul escuro
+   ============================================================ */
+
+input,
+textarea,
+[data-baseweb="input"] > div,
+[data-baseweb="textarea"] > div,
+div[data-baseweb="select"] > div {{
+    background-color: #F3F7FA !important;
+    color: #0F2D3A !important;
+    border: 1px solid #8FA6B3 !important;
+    caret-color: #D62828 !important;
+}}
+
+input:hover,
+textarea:hover,
+[data-baseweb="input"] > div:hover,
+[data-baseweb="textarea"] > div:hover,
+div[data-baseweb="select"] > div:hover {{
+    background-color: #EAF2F6 !important;
+    border-color: #5F8796 !important;
+}}
+
+/* Texto interno dos campos */
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+[data-testid="stNumberInput"] input,
+div[data-baseweb="select"] input {{
+    background-color: #F3F7FA !important;
+    color: #0F2D3A !important;
+    caret-color: #D62828 !important;
+}}
+
+/* Cursor do mouse sobre campos editáveis */
+[data-baseweb="input"],
+[data-baseweb="input"] *,
+[data-baseweb="textarea"],
+[data-baseweb="textarea"] *,
+input,
+textarea {{
+    cursor: text !important;
+}}
+
+div[data-baseweb="select"],
+div[data-baseweb="select"] * {{
+    cursor: pointer !important;
+}}
+
+/* Placeholders */
+input::placeholder,
+textarea::placeholder {{
+    color: #60717D !important;
+    opacity: 1 !important;
+}}
+
+/* Selectbox */
+div[data-baseweb="select"] span,
+div[data-baseweb="select"] input,
+div[data-baseweb="select"] div {{
+    color: #0F2D3A !important;
+}}
+
+div[data-baseweb="select"] svg {{
+    color: #0F2D3A !important;
+    fill: #0F2D3A !important;
+}}
+
+/* Menu aberto dos selectboxes */
+div[data-baseweb="popover"],
+div[data-baseweb="popover"] div,
+ul[role="listbox"],
+li[role="option"],
+li[role="option"] div,
+li[role="option"] span {{
+    background-color: #FFFFFF !important;
+    color: #0F2D3A !important;
+}}
+
+li[role="option"]:hover,
+li[role="option"]:hover div,
+li[role="option"]:hover span {{
+    background-color: #DFF3EE !important;
+    color: #0F2D3A !important;
+}}
+
+/* Campo desabilitado, como Espécie */
+input:disabled,
+textarea:disabled {{
+    background-color: #E6EEF2 !important;
+    color: #60717D !important;
+    opacity: 1 !important;
+}}
+
+/* Foco/edição: campo branco com borda verde */
+input:focus,
+textarea:focus,
+[data-baseweb="input"]:focus-within > div,
+[data-baseweb="textarea"]:focus-within > div,
+div[data-baseweb="select"]:focus-within > div {{
+    background-color: #FFFFFF !important;
+    color: #0F2D3A !important;
+    border: 2px solid #0F766E !important;
+    box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.18) !important;
+    caret-color: #D62828 !important;
+}}
+
+[data-baseweb="input"]:focus-within input,
+[data-baseweb="textarea"]:focus-within textarea,
+[data-testid="stNumberInput"]:focus-within input {{
+    background-color: #FFFFFF !important;
+    color: #0F2D3A !important;
+    caret-color: #D62828 !important;
+}}
+
+/* Number input: botões + e - */
+[data-testid="stNumberInput"] button {{
+    background-color: #0F2D3A !important;
+    color: #FFFFFF !important;
+    border-color: #0F2D3A !important;
+    cursor: pointer !important;
+}}
+
+[data-testid="stNumberInput"] button svg {{
+    color: #FFFFFF !important;
+    fill: #FFFFFF !important;
+}}
+
+/* ============================================================
+   ABAS
+   ============================================================ */
+
+button[data-baseweb="tab"] p,
+button[data-baseweb="tab"] span {{
+    color: #4E6472 !important;
+    font-weight: 700 !important;
+}}
+
+button[data-baseweb="tab"][aria-selected="true"] p,
+button[data-baseweb="tab"][aria-selected="true"] span {{
+    color: #0F766E !important;
+    font-weight: 800 !important;
+}}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+[data-testid="stSidebar"] {{
+    background: linear-gradient(180deg, #075E66 0%, #0F766E 100%) !important;
+}}
 
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stMarkdown,
 [data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 {
-    color: white !important;
-}
+[data-testid="stSidebar"] h3 {{
+    color: #FFFFFF !important;
+}}
 
 [data-testid="stSidebar"] input,
-[data-testid="stSidebar"] textarea {
-    color: #111827 !important;
-    background-color: white !important;
-}
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] [data-baseweb="input"] > div,
+[data-testid="stSidebar"] [data-baseweb="textarea"] > div,
+[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+    background-color: #F3F7FA !important;
+    color: #0F2D3A !important;
+    caret-color: #D62828 !important;
+}}
 
-[data-testid="stSidebar"] [data-baseweb="select"] > div {
-    color: #111827 !important;
-    background-color: white !important;
-}
+[data-testid="stSidebar"] div[data-baseweb="select"] span,
+[data-testid="stSidebar"] div[data-baseweb="select"] input {{
+    color: #0F2D3A !important;
+}}
 
-[data-testid="stSidebar"] .stButton > button {
-    color: #ffffff !important;
-    background-color: #00616b !important;
-    border: 1px solid rgba(255,255,255,0.35) !important;
-}
+/* ============================================================
+   BOTÕES GERAIS
+   ============================================================ */
 
-[data-testid="stSidebar"] .stButton > button p,
-[data-testid="stSidebar"] .stButton > button span {
-    color: #ffffff !important;
-}
+.stButton > button,
+button[kind="secondary"],
+button[kind="primary"] {{
+    color: #FFFFFF !important;
+    background-color: #0F2D3A !important;
+    border: 1px solid #0F2D3A !important;
+    font-weight: 700 !important;
+    border-radius: 10px !important;
+}}
 
-[data-testid="stSidebar"] .stButton > button:disabled {
-    color: #1f2937 !important;
-    background-color: #e5e7eb !important;
-    border: 1px solid #cbd5e1 !important;
+.stButton > button p,
+.stButton > button span,
+button[kind="secondary"] p,
+button[kind="secondary"] span,
+button[kind="primary"] p,
+button[kind="primary"] span {{
+    color: #FFFFFF !important;
+}}
+
+.stButton > button:hover,
+button[kind="secondary"]:hover,
+button[kind="primary"]:hover {{
+    background-color: #0F766E !important;
+    border-color: #0F766E !important;
+    color: #FFFFFF !important;
+}}
+
+.stButton > button:disabled,
+button:disabled {{
+    color: #CBD5E1 !important;
+    background-color: #1F2937 !important;
+    border: 1px solid #334155 !important;
     opacity: 1 !important;
-}
+}}
 
-[data-testid="stSidebar"] .stButton > button:disabled p,
-[data-testid="stSidebar"] .stButton > button:disabled span {
-    color: #1f2937 !important;
+.stButton > button:disabled p,
+.stButton > button:disabled span,
+button:disabled p,
+button:disabled span {{
+    color: #CBD5E1 !important;
     opacity: 1 !important;
-}
+}}
 
-.kpi-card {
-    background: white;
-    padding: 18px;
-    border-radius: 18px;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.08);
-    border-left: 6px solid #2a9d8f;
-    margin-bottom: 12px;
-}
+/* ============================================================
+   CARDS, KPIS E SEÇÕES
+   ============================================================ */
 
-.kpi-title {
-    font-size: 14px;
-    color: #4f6d7a;
-    margin-bottom: 6px;
-}
+.kpi-card {{
+    background: rgba(255, 255, 255, 0.90) !important;
+    padding: 18px !important;
+    border-radius: 18px !important;
+    box-shadow: 0 6px 18px rgba(15, 45, 58, 0.12) !important;
+    border-left: 6px solid #0F766E !important;
+    margin-bottom: 12px !important;
+}}
 
-.kpi-value {
-    font-size: 28px;
-    font-weight: 700;
-    color: #0f4c5c;
-}
+.kpi-title {{
+    font-size: 14px !important;
+    color: #4E6472 !important;
+    margin-bottom: 6px !important;
+    font-weight: 700 !important;
+}}
 
-.section-box {
-    background: white;
-    border: 1px solid #d9e7e3;
-    border-radius: 18px;
-    padding: 18px;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
-    margin-bottom: 18px;
-}
+.kpi-value {{
+    font-size: 28px !important;
+    font-weight: 800 !important;
+    color: #0F2D3A !important;
+}}
 
-.hero-box {
-    background: linear-gradient(135deg, rgba(15,76,92,0.96), rgba(42,157,143,0.92));
-    color: white;
-    border-radius: 22px;
-    padding: 28px 30px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    margin-bottom: 18px;
-}
+.section-box {{
+    background: rgba(255, 255, 255, 0.86) !important;
+    border: 1px solid #C9D8D4 !important;
+    border-radius: 18px !important;
+    padding: 18px !important;
+    box-shadow: 0 6px 18px rgba(15, 45, 58, 0.10) !important;
+    margin-bottom: 18px !important;
+}}
 
-.hero-title {
-    font-size: 34px;
-    font-weight: 800;
-    margin-bottom: 6px;
-}
+.hero-box {{
+    background: linear-gradient(135deg, rgba(15,76,92,0.96), rgba(15,118,110,0.94)) !important;
+    color: white !important;
+    border-radius: 22px !important;
+    padding: 28px 30px !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16) !important;
+    margin-bottom: 18px !important;
+}}
 
-.hero-subtitle {
-    font-size: 18px;
-    opacity: 0.95;
-    margin-bottom: 0;
-}
+.hero-title {{
+    font-size: 34px !important;
+    font-weight: 800 !important;
+    margin-bottom: 6px !important;
+    color: #FFFFFF !important;
+}}
+
+.hero-subtitle {{
+    font-size: 18px !important;
+    opacity: 0.95 !important;
+    margin-bottom: 0 !important;
+    color: #FFFFFF !important;
+}}
+
+/* Métricas nativas */
+[data-testid="stMetric"],
+[data-testid="stMetric"] div,
+[data-testid="stMetric"] label,
+[data-testid="stMetric"] span {{
+    color: #102A43 !important;
+}}
+
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] div {{
+    color: #0F2D3A !important;
+    font-weight: 800 !important;
+}}
+
+/* Alertas */
+[data-testid="stAlert"] {{
+    background-color: rgba(217, 238, 247, 0.94) !important;
+    color: #102A43 !important;
+    border-radius: 12px !important;
+}}
+
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span,
+[data-testid="stAlert"] div {{
+    color: #102A43 !important;
+}}
+
+/* ============================================================
+   RESPONSIVO
+   ============================================================ */
+
+@media screen and (max-width: 768px) {{
+    .block-container {{
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        background: rgba(238, 247, 244, 0.78) !important;
+    }}
+
+    main h1 {{
+        font-size: 2.1rem !important;
+        line-height: 1.15 !important;
+    }}
+
+    main h2 {{
+        font-size: 1.7rem !important;
+        line-height: 1.2 !important;
+    }}
+
+    main h3 {{
+        font-size: 1.35rem !important;
+        line-height: 1.25 !important;
+    }}
+
+    label,
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stWidgetLabel"] span {{
+        color: #334E5C !important;
+        font-size: 0.95rem !important;
+        font-weight: 800 !important;
+    }}
+
+    input,
+    textarea,
+    div[data-baseweb="select"] > div {{
+        min-height: 48px !important;
+        font-size: 1rem !important;
+    }}
+
+    .stButton > button {{
+        min-height: 48px !important;
+        font-size: 1rem !important;
+    }}
+}}
 </style>
 """,
     unsafe_allow_html=True,
 )
-
 
 def _ui_geometry(system_type: str, unit_volume_m3: float, length_m: float, width_m: float, depth_m: float) -> dict:
     depth = max(float(depth_m), 0.2)
@@ -969,12 +1302,110 @@ with tab4:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+
+def _normalize_production_schedule_for_display(results: dict, form_data: dict) -> dict:
+    """
+    Corrige/normaliza, no nível do app, a distribuição operacional de lotes
+    para evitar inconsistência visual quando o cálculo informa lotes em paralelo,
+    mas o campo "Tanques por lote" fica desatualizado.
+
+    Exemplo esperado:
+    18 tanques / 9 lotes em paralelo = 2 tanques por lote.
+    """
+    if not isinstance(results, dict):
+        return {}
+
+    base = results.get("base", {})
+    if not isinstance(base, dict):
+        return {}
+
+    schedule = base.get("production_schedule", {})
+    if not isinstance(schedule, dict):
+        return {}
+
+    try:
+        number_of_units = max(1, int(form_data.get("number_of_units", 1)))
+    except (TypeError, ValueError):
+        number_of_units = 1
+
+    strategy = schedule.get("production_strategy", form_data.get("production_strategy", "Ciclos simultâneos"))
+    if strategy != "Escalonada":
+        schedule["batches_in_parallel"] = 1
+        schedule["units_per_batch_exact"] = float(number_of_units)
+        schedule["batch_distribution_note"] = (
+            f"No modo de ciclos simultâneos, os {number_of_units} tanque(s) "
+            "entram e saem do ciclo no mesmo período."
+        )
+        return schedule
+
+    scheduling_basis = form_data.get("scheduling_basis", schedule.get("scheduling_basis", "Intervalo entre despescas"))
+
+    estimated_cycle_days = base.get("estimated_cycle_days", 0) or 0
+    try:
+        cycle_months = float(schedule.get("first_harvest_after_months") or (float(estimated_cycle_days) / 30.4375))
+    except (TypeError, ValueError, ZeroDivisionError):
+        cycle_months = 0.0
+
+    try:
+        harvest_interval = float(form_data.get("harvest_interval_months", schedule.get("harvest_interval_months", 1.0)) or 1.0)
+    except (TypeError, ValueError):
+        harvest_interval = 1.0
+    harvest_interval = max(harvest_interval, 0.01)
+
+    def _ceil_positive(value: float) -> int:
+        if value <= 1:
+            return 1
+        as_int = int(value)
+        return as_int if abs(value - as_int) < 1e-9 else as_int + 1
+
+    if scheduling_basis == "Número de lotes":
+        try:
+            batches = max(1, int(form_data.get("manual_parallel_batches", schedule.get("batches_in_parallel", 1)) or 1))
+        except (TypeError, ValueError):
+            batches = 1
+        batch_mode = "Personalizado"
+    elif scheduling_basis == "Tanques por lote":
+        try:
+            desired_units = max(1, int(form_data.get("desired_units_per_batch", 1) or 1))
+        except (TypeError, ValueError):
+            desired_units = 1
+        batches = _ceil_positive(number_of_units / desired_units)
+        batch_mode = "Personalizado"
+    else:
+        batches = _ceil_positive(cycle_months / harvest_interval) if cycle_months > 0 else max(1, int(schedule.get("batches_in_parallel", 1) or 1))
+        batch_mode = "Automático"
+
+    batches = max(1, min(int(batches), number_of_units))
+    units_per_batch_exact = number_of_units / batches
+
+    schedule["production_strategy"] = "Escalonada"
+    schedule["scheduling_basis"] = scheduling_basis
+    schedule["harvest_interval_months"] = harvest_interval
+    schedule["batches_in_parallel"] = batches
+    schedule["units_per_batch_exact"] = units_per_batch_exact
+    schedule["production_batch_mode"] = schedule.get("production_batch_mode", batch_mode)
+
+    if abs(units_per_batch_exact - round(units_per_batch_exact)) < 1e-9:
+        units_text = f"{int(round(units_per_batch_exact))} tanque(s) por lote"
+    else:
+        units_text = f"{units_per_batch_exact:.2f} tanque(s) por lote em média"
+
+    schedule["batch_distribution_note"] = (
+        f"Com {number_of_units} tanque(s) e {batches} lote(s) em paralelo, "
+        f"a distribuição operacional sugerida é de {units_text}; "
+        "a primeira receita ocorre apenas após o fechamento do ciclo biológico inicial."
+    )
+
+    return schedule
+
 fd_calc = fd.copy()
 fd_calc["fingerling_weight_kg"] = fd["fingerling_weight_kg"] / 1000.0
 
 inp = DashboardProjectInput(**fd_calc)
 results = calculate_dashboard_project(inp)
 st.session_state.latest_results = results
+base_res = results["base"]
+_normalize_production_schedule_for_display(results, fd)
 base_res = results["base"]
 alt_factor_ui = altitude_transfer_factor(fd_calc.get("site_altitude_m", 0.0))
 temp_factor_ui = surface_aeration_base_factor(fd_calc.get("water_temperature_c", 28.0))
@@ -1456,51 +1887,3 @@ with tab6:
                 st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-# --- Correção visual para Streamlit Cloud: texto branco sobre fundo claro ---
-st.markdown("""
-<style>
-/* Área principal */
-main, .block-container, [data-testid="stMain"] {
-    color: #102A43 !important;
-}
-
-/* Títulos, textos e labels da área principal */
-main h1, main h2, main h3, main h4, main h5, main h6,
-main p, main span, main label,
-main [data-testid="stWidgetLabel"] *,
-main [data-testid="stMarkdownContainer"] * {
-    color: #102A43 !important;
-}
-
-/* Campos de texto e número */
-input, textarea {
-    color: #102A43 !important;
-    background-color: #FFFFFF !important;
-}
-
-/* Selectbox / caixas de seleção */
-div[data-baseweb="select"] > div {
-    background-color: #FFFFFF !important;
-    color: #102A43 !important;
-}
-
-div[data-baseweb="select"] span,
-div[data-baseweb="select"] input {
-    color: #102A43 !important;
-}
-
-/* Opções abertas do selectbox */
-div[data-baseweb="popover"] *,
-ul[role="listbox"] *,
-li[role="option"] * {
-    color: #102A43 !important;
-    background-color: #FFFFFF !important;
-}
-
-/* Number input: botões + e - */
-button[kind="secondary"] {
-    color: #102A43 !important;
-}
-</style>
-""", unsafe_allow_html=True)
