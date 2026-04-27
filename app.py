@@ -65,8 +65,8 @@ if BG_IMAGE_BASE64:
     app_background_css = f"""
     background-image:
         linear-gradient(
-            rgba(238, 247, 244, 0.30),
-            rgba(238, 247, 244, 0.46)
+            rgba(238, 247, 244, 0.42),
+            rgba(238, 247, 244, 0.58)
         ),
         url("data:image/png;base64,{BG_IMAGE_BASE64}") !important;
     background-size: cover !important;
@@ -101,7 +101,7 @@ st.markdown(
 }}
 
 .block-container {{
-    background: rgba(238, 247, 244, 0.60) !important;
+    background: rgba(238, 247, 244, 0.70) !important;
     border-radius: 18px !important;
     padding-top: 1.2rem !important;
     padding-bottom: 2rem !important;
@@ -522,6 +522,139 @@ def _ui_geometry(system_type: str, unit_volume_m3: float, length_m: float, width
 
 def _model_options(library: list[dict], key: str = "model") -> list[str]:
     return [item[key] for item in library]
+
+
+
+def _safe_float_for_ui(value, default: float | None = None) -> float | None:
+    """Converte valores numéricos em float, aceitando formatos brasileiros."""
+    try:
+        if value is None or value == "":
+            return default
+        if isinstance(value, str):
+            value = value.replace("R$", "").replace("%", "").replace("x", "").strip()
+            value = value.replace(".", "").replace(",", ".")
+        return float(value)
+    except Exception:
+        return default
+
+
+def _first_existing(mapping: dict, keys: list[str], default=None):
+    """Retorna o primeiro valor não vazio entre várias chaves possíveis."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _parse_weight_range_g(row: dict) -> tuple[float | None, float | None]:
+    """Extrai faixa de peso em gramas a partir do feeding_plan."""
+    min_g = _safe_float_for_ui(_first_existing(row, ["min_g", "phase_min_g", "Peso mín. (g)"]), None)
+    max_g = _safe_float_for_ui(_first_existing(row, ["max_g", "phase_max_g", "Peso máx. (g)"]), None)
+    if min_g is not None and max_g is not None:
+        return min_g, max_g
+
+    text = str(row.get("weight_range", row.get("Faixa de peso", "")))
+    import re
+    nums = re.findall(r"\d+(?:[\.,]\d+)?", text)
+    if len(nums) >= 2:
+        return _safe_float_for_ui(nums[0], None), _safe_float_for_ui(nums[1], None)
+    return None, None
+
+
+def _format_pct_for_table(value) -> str:
+    number = _safe_float_for_ui(value, None)
+    if number is None:
+        return "-"
+    return f"{num(number, 1)}%"
+
+
+def _format_number_for_table(value, decimals: int = 2) -> str:
+    number = _safe_float_for_ui(value, None)
+    if number is None:
+        return "-"
+    return num(number, decimals)
+
+
+def _format_money_for_table(value) -> str:
+    number = _safe_float_for_ui(value, None)
+    if number is None:
+        return "-"
+    return brl(number)
+
+
+def _build_aeration_phase_table_rows(base_data: dict, form_data: dict) -> list[dict]:
+    """
+    Consolida a operação da aeração por fase e preenche colunas que o cálculo
+    original pode não retornar diretamente: biomassa média, demanda de O₂ e dias.
+    """
+    if not isinstance(base_data, dict):
+        return []
+
+    aer_rows = base_data.get("aeration_phase_operation", []) or []
+    feeding_plan = base_data.get("feeding_plan", []) or []
+    if not isinstance(aer_rows, list):
+        aer_rows = []
+    if not isinstance(feeding_plan, list):
+        feeding_plan = []
+
+    number_of_units = _safe_float_for_ui(form_data.get("number_of_units"), 1.0) or 1.0
+    survival = _safe_float_for_ui(form_data.get("survival_rate"), 0.90) or 0.90
+    survival = survival if survival > 0 else 0.90
+    target_weight_kg = (_safe_float_for_ui(form_data.get("target_weight_g"), 1000.0) or 1000.0) / 1000.0
+    target_weight_kg = target_weight_kg if target_weight_kg > 0 else 1.0
+
+    total_harvest_biomass = _safe_float_for_ui(base_data.get("production_per_cycle_kg"), None)
+    if total_harvest_biomass is None:
+        final_per_tank = _safe_float_for_ui(base_data.get("final_biomass_per_tank_kg"), 0.0) or 0.0
+        total_harvest_biomass = final_per_tank * number_of_units
+
+    initial_fish_count = total_harvest_biomass / target_weight_kg / survival if total_harvest_biomass else 0.0
+    oxygen_base_mg = _safe_float_for_ui(form_data.get("oxygen_demand_mg_per_kg_h"), 550.0) or 550.0
+    safety_factor = 1.0 + ((_safe_float_for_ui(form_data.get("aeration_safety_factor_pct"), 0.0) or 0.0) / 100.0)
+    hours_per_day = _safe_float_for_ui(form_data.get("aeration_hours_per_day"), 24.0) or 24.0
+    energy_price = _safe_float_for_ui(form_data.get("electricity_price_kwh"), 0.45) or 0.45
+    default_equipment = _safe_float_for_ui(base_data.get("required_aerators"), None)
+
+    n_rows = max(len(aer_rows), len(feeding_plan))
+    output: list[dict] = []
+    for idx in range(n_rows):
+        aer = aer_rows[idx] if idx < len(aer_rows) and isinstance(aer_rows[idx], dict) else {}
+        feed = feeding_plan[idx] if idx < len(feeding_plan) and isinstance(feeding_plan[idx], dict) else {}
+
+        phase = _first_existing(aer, ["Fase", "phase_name", "fase"], None) or feed.get("phase_name") or f"Fase {idx + 1}"
+
+        biomass = _safe_float_for_ui(_first_existing(aer, ["Biomassa média (kg)", "biomass_mean_kg", "average_biomass_kg", "Biomassa (kg)"]), None)
+        if biomass is None:
+            min_g, max_g = _parse_weight_range_g(feed)
+            if min_g is not None and max_g is not None and initial_fish_count > 0:
+                biomass = initial_fish_count * ((min_g + max_g) / 2.0) / 1000.0
+
+        demand = _safe_float_for_ui(_first_existing(aer, ["Demanda O₂ (kg/h)", "Demanda O2 (kg/h)", "oxygen_demand_kg_h", "demand_kg_h", "phase_oxygen_demand_kg_h"]), None)
+        if demand is None and biomass is not None:
+            demand = biomass * oxygen_base_mg * safety_factor / 1_000_000.0
+
+        modulation = _first_existing(aer, ["% de uso da capacidade", "% de modulação sugerida", "Modulação sugerida", "usage_pct", "capacity_usage_pct"], None)
+        equipment = _safe_float_for_ui(_first_existing(aer, ["Equipamentos ativos", "Equipamentos operando", "active_equipment", "equipment_active"], default_equipment), None)
+        power = _safe_float_for_ui(_first_existing(aer, ["Potência ativa da fase (kW)", "Potência média ativa da fase (kW)", "active_power_kw", "average_active_power_kw"], None), None)
+        days = _safe_float_for_ui(_first_existing(aer, ["Dias", "days", "days_in_phase"], feed.get("days_in_phase")), None)
+        cost = _safe_float_for_ui(_first_existing(aer, ["Custo da fase", "Custo da fase (R$)", "phase_cost", "aeration_cost_phase"], None), None)
+        if cost is None and power is not None and days is not None:
+            cost = power * hours_per_day * days * energy_price
+
+        output.append({
+            "Fase": phase,
+            "Biomassa média (kg)": _format_number_for_table(biomass, 2),
+            "Demanda O₂ (kg/h)": _format_number_for_table(demand, 3),
+            "Modulação sugerida": _format_pct_for_table(modulation),
+            "Equipamentos operando": _format_number_for_table(equipment, 0),
+            "Potência média ativa (kW)": _format_number_for_table(power, 2),
+            "Dias": _format_number_for_table(days, 0),
+            "Custo da fase": _format_money_for_table(cost),
+        })
+    return output
 
 
 sample_data = {
@@ -1502,11 +1635,11 @@ with tab4:
             st.write(f"- **Máximo sugerido por tanque:** {int(det.get('max_units_per_tank', 0))}")
             st.write(f"- **Situação:** {'Viável' if det.get('feasible', False) else 'Inadequada para este arranjo'}")
 
-    aer_phase = pd.DataFrame(base_res.get("aeration_phase_operation", []))
-    if not aer_phase.empty:
+    aer_phase_rows_ui = _build_aeration_phase_table_rows(base_res, fd)
+    if aer_phase_rows_ui:
         st.markdown("**Operação da aeração por fase**")
-        aer_phase_view = aer_phase.rename(columns={"% de uso da capacidade": "% de modulação sugerida", "Equipamentos ativos": "Equipamentos operando", "Potência ativa da fase (kW)": "Potência média ativa da fase (kW)"})
-        st.dataframe(aer_phase_view, use_container_width=True)
+        aer_phase_view = pd.DataFrame(aer_phase_rows_ui)
+        st.dataframe(aer_phase_view, use_container_width=True, hide_index=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1826,14 +1959,419 @@ with tab5:
         st.pyplot(fig5)
         st.markdown("</div>", unsafe_allow_html=True)
 
+
+
+def _safe_text(value, default: str = "-") -> str:
+    """Converte valores para texto seguro, evitando None/campos vazios em relatórios."""
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _safe_number(value, decimals: int = 2, suffix: str = "", default: str = "-") -> str:
+    """Formata números com segurança usando o padrão brasileiro já usado no app."""
+    try:
+        if value is None:
+            return default
+        return f"{num(float(value), decimals)}{suffix}"
+    except Exception:
+        return default
+
+
+def _safe_money(value, default: str = "-") -> str:
+    try:
+        if value is None:
+            return default
+        return brl(float(value))
+    except Exception:
+        return default
+
+
+def _get_first(mapping: dict, keys: list[str], default=None):
+    """Busca o primeiro valor existente em uma lista de possíveis chaves."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        if key in mapping and mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return default
+
+
+def _as_float(value, default: float | None = None):
+    try:
+        if value is None or value == "":
+            return default
+        if isinstance(value, str):
+            value = value.replace("R$", "").replace("%", "").replace("x", "").strip()
+            value = value.replace(".", "").replace(",", ".")
+        return float(value)
+    except Exception:
+        return default
+
+
+def _markdown_table(headers: list[str], rows: list[list[object]]) -> str:
+    """Monta tabela Markdown válida, sem células vazias."""
+    clean_headers = [_safe_text(h) for h in headers]
+    clean_rows = [[_safe_text(cell) for cell in row] for row in rows]
+    lines = [
+        "| " + " | ".join(clean_headers) + " |",
+        "| " + " | ".join(["---"] * len(clean_headers)) + " |",
+    ]
+    for row in clean_rows:
+        if len(row) < len(clean_headers):
+            row = row + ["-"] * (len(clean_headers) - len(row))
+        lines.append("| " + " | ".join(row[: len(clean_headers)]) + " |")
+    return "\n".join(lines)
+
+
+def _build_structured_professional_report(results_data: dict, profile: str, form_data: dict) -> str:
+    """
+    Relatório técnico estruturado e estável.
+    Evita placeholders vazios e usa tabelas Markdown bem formadas,
+    que depois são convertidas para tabelas reais no DOCX.
+    """
+    base = results_data.get("base", {}) if isinstance(results_data, dict) else {}
+    schedule = base.get("production_schedule", {}) if isinstance(base, dict) else {}
+    geometry = base.get("geometry", {}) if isinstance(base, dict) else {}
+    feeding_plan = base.get("feeding_plan", []) if isinstance(base, dict) else []
+    aer_rows = base.get("aeration_phase_operation", []) if isinstance(base, dict) else []
+
+    installed_supply = _as_float(base.get("installed_oxygen_supply_kg_h"), 0.0) or 0.0
+    oxygen_demand_total = _as_float(base.get("oxygen_demand_kg_h"), 0.0) or 0.0
+    offer_demand_ratio = installed_supply / oxygen_demand_total if oxygen_demand_total > 0 else None
+
+    critical_row = None
+    critical_score = -1.0
+    for row in aer_rows if isinstance(aer_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        demand = _as_float(_get_first(row, ["Demanda O₂ (kg/h)", "Demanda O2 (kg/h)", "oxygen_demand_kg_h", "demand_kg_h", "phase_oxygen_demand_kg_h"]), 0.0) or 0.0
+        usage = _as_float(_get_first(row, ["% de uso da capacidade", "% de modulação sugerida", "Modulação sugerida", "usage_pct", "capacity_usage_pct"]), None)
+        score = usage if usage is not None else demand
+        if score > critical_score:
+            critical_score = score
+            critical_row = row
+
+    if critical_row:
+        critical_usage = _as_float(_get_first(critical_row, ["% de uso da capacidade", "% de modulação sugerida", "Modulação sugerida", "usage_pct", "capacity_usage_pct"]), None)
+    else:
+        critical_usage = None
+    if critical_usage is None and offer_demand_ratio and offer_demand_ratio > 0:
+        critical_usage = min(100.0, (1.0 / offer_demand_ratio) * 100.0)
+
+    compatibility_warning = _safe_text(base.get("selected_aeration_warning"), "")
+    if compatibility_warning:
+        compatibility_text = compatibility_warning
+    elif installed_supply > 0 and oxygen_demand_total > 0 and installed_supply >= oxygen_demand_total:
+        compatibility_text = "Compatível para o cenário simulado, considerando demanda total estimada e oferta instalada de oxigênio."
+    elif oxygen_demand_total > 0:
+        compatibility_text = "Revisar dimensionamento: a oferta instalada estimada está abaixo da demanda total de oxigênio."
+    else:
+        compatibility_text = "Compatibilidade dependente da validação operacional do equipamento, geometria dos tanques e manejo de campo."
+
+    project_rows = [
+        ["Projeto", form_data.get("project_name")],
+        ["Responsável técnico / autor", form_data.get("author_name")],
+        ["Perfil do relatório", profile],
+        ["Espécie", "Tilápia"],
+        ["Região de referência", form_data.get("region_focus")],
+        ["Tipo de estrutura", form_data.get("system_type")],
+    ]
+
+    production_rows = [
+        ["Estratégia de produção", schedule.get("production_strategy", form_data.get("production_strategy"))],
+        ["Critério de escalonamento", schedule.get("scheduling_basis", form_data.get("scheduling_basis"))],
+        ["Ciclo biológico do lote", f"{_safe_number(base.get('estimated_cycle_days'), 0)} dias"],
+        ["Primeira receita após", f"{_safe_number(schedule.get('first_harvest_after_months'), 1)} meses"],
+        ["Intervalo entre despescas em regime", f"{_safe_number(schedule.get('actual_interval_months_with_informed_units'), 2)} meses"],
+        ["Lotes em paralelo", _safe_number(schedule.get("batches_in_parallel"), 0)],
+        ["Tanques por lote", _safe_number(schedule.get("units_per_batch_exact"), 2)],
+        ["Produção por despesca em regime", f"{_safe_number(schedule.get('production_per_harvest_kg'), 2)} kg"],
+        ["Produção no 1º ano com rampa", f"{_safe_number(schedule.get('production_year1_kg'), 2)} kg"],
+        ["Receita no 1º ano com rampa", _safe_money(schedule.get("revenue_year1"))],
+    ]
+
+    dimension_rows = [
+        ["Tanques informados", _safe_number(form_data.get("number_of_units"), 0)],
+        ["Volume útil por tanque", f"{_safe_number(geometry.get('unit_volume_m3'), 2)} m³"],
+        ["Área superficial por tanque", f"{_safe_number(geometry.get('surface_area_m2'), 2)} m²"],
+        ["Densidade final", f"{_safe_number(form_data.get('density_kg_m3'), 2)} kg/m³"],
+        ["Sobrevivência estimada", _safe_number(form_data.get("survival_rate"), 2)],
+        ["Peixes colhidos por tanque", _safe_number(base.get("fish_harvested_per_tank"), 0)],
+        ["Biomassa final por tanque", f"{_safe_number(base.get('final_biomass_per_tank_kg'), 2)} kg"],
+    ]
+
+    aeration_summary_rows = [
+        ["Demanda de oxigênio por tanque", f"{_safe_number(base.get('oxygen_demand_per_tank_kg_h'), 2)} kg O₂/h"],
+        ["Demanda total de oxigênio", f"{_safe_number(base.get('oxygen_demand_kg_h'), 2)} kg O₂/h"],
+        ["Tecnologia adotada", base.get("selected_aeration_technology")],
+        ["Modelo adotado", base.get("selected_aeration_model")],
+        ["Equipamentos instalados", _safe_number(base.get("required_aerators"), 0)],
+        ["Oferta instalada de oxigênio", f"{_safe_number(base.get('installed_oxygen_supply_kg_h'), 2)} kg O₂/h"],
+        ["Potência instalada total", f"{_safe_number(base.get('peak_installed_power_kw'), 2)} kW"],
+        ["Potência média utilizada no ciclo", f"{_safe_number(base.get('average_active_power_kw'), 2)} kW"],
+        ["Modo de operação", base.get("aeration_operation_mode")],
+        ["Estratégia de controle sugerida", base.get("aeration_control_strategy")],
+        ["Equipamento de controle recomendado", base.get("aeration_control_equipment")],
+        ["Custo de aeração no ciclo (potência fixa)", _safe_money(base.get("aeration_energy_cost_cycle_fixed_power"))],
+        ["Custo de aeração no ciclo (estratégia adotada)", _safe_money(base.get("aeration_energy_cost_cycle"))],
+        ["Economia estimada no ciclo", f"{_safe_money(base.get('aeration_savings_cycle_rs'))} ({_safe_number(base.get('aeration_savings_cycle_pct'), 1)}%)"],
+        ["Uso estimado do modelo na fase crítica", f"{_safe_number(critical_usage, 1)}%"],
+        ["Relação oferta/demanda na fase crítica", f"{_safe_number(offer_demand_ratio, 2)}x"],
+        ["Compatibilidade geométrica / operacional", compatibility_text],
+    ]
+
+    aeration_phase_dict_rows = _build_aeration_phase_table_rows(base, form_data)
+    aeration_phase_rows = [
+        [
+            row.get("Fase", "-"),
+            row.get("Biomassa média (kg)", "-"),
+            row.get("Demanda O₂ (kg/h)", "-"),
+            row.get("Modulação sugerida", "-"),
+            row.get("Equipamentos operando", "-"),
+            row.get("Potência média ativa (kW)", "-"),
+            row.get("Dias", "-"),
+            row.get("Custo da fase", "-"),
+        ]
+        for row in aeration_phase_dict_rows
+    ]
+
+    if not aeration_phase_rows:
+        aeration_phase_rows.append(["-", "-", "-", "-", "-", "-", "-", "-"])
+
+    feeding_rows = []
+    for idx, row in enumerate(feeding_plan if isinstance(feeding_plan, list) else [], start=1):
+        if not isinstance(row, dict):
+            continue
+        feeding_rows.append([
+            row.get("phase_name", f"Fase {idx}"),
+            row.get("weight_range", "-"),
+            _safe_number(row.get("days_in_phase"), 0),
+            _safe_number(row.get("protein_percent"), 1),
+            _safe_text(row.get("pellet_recommendation", row.get("pellet_mm", "-"))),
+            _safe_money(row.get("feed_price_per_kg")),
+            _safe_number(row.get("phase_fcr"), 2),
+            _safe_number(row.get("biomass_gain_phase_kg"), 2),
+            _safe_number(row.get("feed_phase_kg"), 2),
+            _safe_money(row.get("feed_phase_cost")),
+        ])
+
+    if not feeding_rows:
+        feeding_rows.append(["-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
+
+    cost_rows = [
+        ["Receita por ciclo", _safe_money(base.get("revenue_cycle"))],
+        ["Custo de alevinos por ciclo", _safe_money(base.get("fingerling_cost_cycle"))],
+        ["Custo de ração por ciclo", _safe_money(base.get("feed_cost_cycle"))],
+        ["Custo de aeração por ciclo", _safe_money(base.get("aeration_energy_cost_cycle"))],
+        ["OPEX por ciclo", _safe_money(base.get("opex_cycle"))],
+        ["Margem bruta por ciclo", _safe_money(base.get("gross_margin_cycle"))],
+        ["FCR do plano", _safe_number(base.get("implied_fcr"), 2)],
+    ]
+
+    lines = [
+        "# PROJETO TÉCNICO-ECONÔMICO DE PISCICULTURA",
+        "",
+        "## 1. Identificação do projeto",
+        "",
+        _markdown_table(["Campo", "Informação"], project_rows),
+        "",
+        "## 2. Resumo executivo",
+        "",
+        f"O projeto simula a produção de tilápia em sistema {_safe_text(form_data.get('system_type')).lower()}, com {_safe_text(form_data.get('number_of_units'))} tanque(s) informado(s), peso inicial de {_safe_number(form_data.get('initial_weight_g'), 2)} g e peso final alvo de {_safe_number(form_data.get('target_weight_g'), 2)} g.",
+        "",
+        "## 3. Estratégia de produção e escalonamento",
+        "",
+        _markdown_table(["Indicador", "Valor"], production_rows),
+        "",
+        _safe_text(schedule.get("batch_distribution_note"), "A distribuição dos lotes deve ser validada conforme o cronograma operacional e a disponibilidade de tanques."),
+        "",
+        "## 4. Dimensionamento do sistema",
+        "",
+        _markdown_table(["Parâmetro", "Valor"], dimension_rows),
+        "",
+        "## 5. Oxigênio e aeração",
+        "",
+        _markdown_table(["Indicador", "Valor"], aeration_summary_rows),
+        "",
+        "### 5.1 Operação da aeração por fase",
+        "",
+        _markdown_table(
+            ["Fase", "Biomassa média (kg)", "Demanda O₂ (kg/h)", "Modulação sugerida", "Equipamentos operando", "Potência média ativa (kW)", "Dias", "Custo da fase"],
+            aeration_phase_rows,
+        ),
+        "",
+        "## 6. Plano alimentar por fase",
+        "",
+        _markdown_table(
+            ["Fase", "Faixa de peso", "Dias", "PB (%)", "Pellet recomendado", "Preço/kg", "FCR", "Ganho biomassa (kg)", "Ração fase (kg)", "Custo fase"],
+            feeding_rows,
+        ),
+        "",
+        "## 7. Custos e indicadores econômicos",
+        "",
+        _markdown_table(["Indicador", "Valor"], cost_rows),
+        "",
+        "## 8. Interpretação técnica",
+        "",
+        "O resultado deve ser interpretado como simulação técnico-econômica. A validação final depende de biometria real, qualidade de água, desempenho alimentar, manejo sanitário, disponibilidade energética e padronização dos lotes.",
+        "",
+        "## 9. Recomendações",
+        "",
+        "- Monitorar oxigênio dissolvido, temperatura, pH, alcalinidade, amônia e transparência/qualidade da água.",
+        "- Revisar FCR por fase com base em biometria e consumo real.",
+        "- Conferir a compatibilidade geométrica dos aeradores com o tanque antes da compra definitiva.",
+        "- Reavaliar preço de ração, energia e venda periodicamente.",
+        "- Em produção escalonada, manter controle rigoroso dos lotes para evitar mistura de idades e pesos.",
+        "",
+        "## 10. Observações finais",
+        "",
+        _safe_text(form_data.get("notes"), "Projeto gerado pelo Aqua Project Agent Dashboard."),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _ensure_report_content(report_text: str, results_data: dict, profile: str, form_data: dict) -> str:
+    """Mantido para compatibilidade; agora sempre retorna relatório estruturado."""
+    return _build_structured_professional_report(results_data, profile, form_data)
+
+
+def _clean_markdown_inline(text: str) -> str:
+    """Remove marcações simples de Markdown para o DOCX ficar limpo."""
+    clean = str(text)
+    for token in ("**", "__", "`"):
+        clean = clean.replace(token, "")
+    return clean.replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ").strip()
+
+
+def _is_markdown_table_separator(cells: list[str]) -> bool:
+    if not cells:
+        return False
+    for cell in cells:
+        normalized = cell.replace(":", "").replace("-", "").strip()
+        if normalized:
+            return False
+    return True
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [_clean_markdown_inline(cell.strip()) for cell in stripped.split("|")]
+
+
+def _add_docx_table(document, table_lines: list[str]) -> None:
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    parsed_rows = [_split_markdown_table_row(line) for line in table_lines if line.strip().startswith("|")]
+    parsed_rows = [row for row in parsed_rows if not _is_markdown_table_separator(row)]
+    if not parsed_rows:
+        return
+
+    max_cols = max(len(row) for row in parsed_rows)
+    parsed_rows = [row + [""] * (max_cols - len(row)) for row in parsed_rows]
+
+    table = document.add_table(rows=1, cols=max_cols)
+    table.style = "Table Grid"
+    table.autofit = True
+
+    header_cells = table.rows[0].cells
+    for idx, value in enumerate(parsed_rows[0]):
+        header_cells[idx].text = value
+        for paragraph in header_cells[idx].paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                run.bold = True
+                run.font.size = Pt(8.5)
+
+    for row in parsed_rows[1:]:
+        cells = table.add_row().cells
+        for idx, value in enumerate(row):
+            cells[idx].text = value
+            for paragraph in cells[idx].paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(8)
+
+    document.add_paragraph("")
+
+
+def _markdown_to_docx_bytes(markdown_text: str, title: str, author: str) -> bytes:
+    """Gera DOCX em memória, convertendo tabelas Markdown em tabelas reais do Word."""
+    from io import BytesIO
+    from docx import Document
+    from docx.shared import Pt, Inches
+    from docx.enum.section import WD_ORIENT
+
+    document = Document()
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.top_margin = Inches(0.65)
+    section.bottom_margin = Inches(0.65)
+    section.left_margin = Inches(0.55)
+    section.right_margin = Inches(0.55)
+
+    styles = document.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(9.5)
+
+    if title:
+        document.add_heading(str(title), level=0)
+    if author:
+        document.add_paragraph(f"Responsável técnico / autor: {author}")
+    document.add_paragraph("")
+
+    lines = (markdown_text or "").splitlines()
+    idx = 0
+    while idx < len(lines):
+        raw_line = lines[idx]
+        stripped = raw_line.strip()
+
+        if not stripped:
+            idx += 1
+            continue
+
+        if stripped.startswith("|"):
+            table_lines = []
+            while idx < len(lines) and lines[idx].strip().startswith("|"):
+                table_lines.append(lines[idx])
+                idx += 1
+            _add_docx_table(document, table_lines)
+            continue
+
+        if stripped.startswith("### "):
+            document.add_heading(_clean_markdown_inline(stripped[4:]), level=3)
+        elif stripped.startswith("## "):
+            document.add_heading(_clean_markdown_inline(stripped[3:]), level=2)
+        elif stripped.startswith("# "):
+            document.add_heading(_clean_markdown_inline(stripped[2:]), level=1)
+        elif stripped.startswith("- "):
+            document.add_paragraph(_clean_markdown_inline(stripped[2:]), style="List Bullet")
+        elif stripped.startswith("* "):
+            document.add_paragraph(_clean_markdown_inline(stripped[2:]), style="List Bullet")
+        else:
+            document.add_paragraph(_clean_markdown_inline(stripped))
+        idx += 1
+
+    bio = BytesIO()
+    document.save(bio)
+    return bio.getvalue()
+
+
 with tab6:
     st.markdown('<div class="section-box">', unsafe_allow_html=True)
     st.subheader("Relatório Profissional")
     st.caption("Estruturado para produtor, técnico ou banco/financiamento.")
 
-    professional_report = build_professional_project_report(
+    professional_report = _build_structured_professional_report(
         results,
-        profile=report_profile,
+        report_profile,
+        fd,
     )
 
     st.markdown("### Pré-visualização do relatório")
@@ -1845,45 +2383,85 @@ with tab6:
 
     st.info(f"Pasta de saída atual: {save_dir}")
 
+    safe_output_name = str(output_name).strip() or "projeto_tilapia_dashboard"
+    md_path = save_dir / f"{safe_output_name}_completo.md"
+    docx_path = save_dir / f"{safe_output_name}_completo.docx"
+
+    md_bytes = professional_report.encode("utf-8")
+
+    try:
+        md_path.write_text(professional_report, encoding="utf-8")
+    except Exception as exc:
+        st.warning(f"Não foi possível salvar o Markdown na pasta de saída: {exc}")
+
+    docx_bytes = None
+    docx_error = None
+
+    try:
+        docx_bytes = _markdown_to_docx_bytes(
+            professional_report,
+            fd.get("project_name", inp.project_name),
+            fd.get("author_name", inp.author_name),
+        )
+        docx_path.write_bytes(docx_bytes)
+    except Exception as exc:
+        docx_error = exc
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("Gerar Relatório (Markdown)"):
-            md_path = save_dir / f"{output_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
-            st.success(f"Relatório Markdown salvo em: {md_path}")
+        st.download_button(
+            label="Baixar Relatório (Markdown)",
+            data=md_bytes,
+            file_name=f"{safe_output_name}_completo.md",
+            mime="text/markdown",
+            key="download_relatorio_markdown",
+        )
 
     with col2:
-        if st.button("Gerar Relatório (DOCX)"):
-            md_path = save_dir / f"{output_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
-
-            docx_path = save_dir / f"{output_name}_completo.docx"
-            export_markdown_to_docx(
-                md_path,
-                docx_path,
-                inp.project_name,
-                inp.author_name,
+        if docx_bytes and len(docx_bytes) > 1000:
+            st.download_button(
+                label="Baixar Relatório (DOCX)",
+                data=docx_bytes,
+                file_name=f"{safe_output_name}_completo.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="download_relatorio_docx",
             )
-            st.success(f"Relatório DOCX salvo em: {docx_path}")
+        else:
+            st.error(f"DOCX não foi gerado corretamente: {docx_error}")
 
     with col3:
-        if st.button("Gerar Relatório (DOCX + PDF)"):
-            md_path = save_dir / f"{output_name}_completo.md"
-            md_path.write_text(professional_report, encoding="utf-8")
+        if st.button("Tentar gerar PDF", key="btn_tentar_gerar_pdf"):
+            if not docx_path.exists() or docx_path.stat().st_size == 0:
+                st.error("O DOCX ainda não foi gerado corretamente; não foi possível tentar converter para PDF.")
+            else:
+                try:
+                    pdf_path = export_docx_to_pdf(docx_path, save_dir)
+                    if pdf_path and Path(pdf_path).exists() and Path(pdf_path).stat().st_size > 0:
+                        st.session_state["latest_pdf_path"] = str(pdf_path)
+                        st.success("PDF gerado. O botão de download aparecerá abaixo.")
+                    else:
+                        st.warning("A conversão para PDF não retornou um arquivo válido.")
+                except Exception as exc:
+                    st.warning(
+                        "DOCX gerado, mas o PDF não foi gerado neste ambiente. "
+                        f"No Streamlit Cloud isso pode acontecer por falta do conversor do Word/LibreOffice. Detalhe: {exc}"
+                    )
 
-            docx_path = save_dir / f"{output_name}_completo.docx"
-            export_markdown_to_docx(
-                md_path,
-                docx_path,
-                inp.project_name,
-                inp.author_name,
-            )
+    latest_pdf_path = st.session_state.get("latest_pdf_path")
+    if latest_pdf_path and Path(latest_pdf_path).exists() and Path(latest_pdf_path).stat().st_size > 0:
+        pdf_path = Path(latest_pdf_path)
+        st.download_button(
+            label="Baixar Relatório (PDF)",
+            data=pdf_path.read_bytes(),
+            file_name=pdf_path.name,
+            mime="application/pdf",
+            key="download_relatorio_pdf",
+        )
 
-            try:
-                pdf_path = export_docx_to_pdf(docx_path, save_dir)
-                st.success(f"Relatórios salvos em: {docx_path} e {pdf_path}")
-            except Exception as e:
-                st.warning(f"DOCX salvo em {docx_path}, mas o PDF não foi gerado: {e}")
+    st.caption(
+        "Observação: no Streamlit Cloud, o caminho exibido em 'Pasta de saída' é uma pasta do servidor. "
+        "Para receber o arquivo no seu computador ou celular, use os botões 'Baixar'."
+    )
 
     st.markdown("</div>", unsafe_allow_html=True)
