@@ -8,34 +8,31 @@ from .models import DashboardProjectInput
 
 def altitude_transfer_factor(altitude_m: float) -> float:
     """
-    Fator de correção da transferência de oxigênio por altitude,
-    com interpolação linear entre pontos de referência técnicos.
-    """
-    points = [
-        (0.0, 1.00),
-        (305.0, 0.96),
-        (610.0, 0.93),
-        (914.0, 0.89),
-        (1524.0, 0.82),
-        (1829.0, 0.80),
-    ]
+    Fator de correção por altitude para transferência de oxigênio.
 
+    Usa a razão aproximada de pressão atmosférica da atmosfera padrão:
+        P/P0 = (1 - 2,25577e-5 * altitude_m) ** 5,25588
+
+    Interpretação operacional: quanto menor a pressão atmosférica, menor a
+    capacidade efetiva de incorporação de O₂ do mesmo equipamento.
+
+    Valores aproximados:
+        0 m     -> 1,00
+        1.000 m -> 0,89
+        2.000 m -> 0,78
+        3.000 m -> 0,69
+        5.000 m -> 0,53
+        10.000 m -> 0,26
+    """
     try:
         alt = max(0.0, float(altitude_m))
     except (TypeError, ValueError):
         alt = 0.0
 
-    if alt <= points[0][0]:
-        return points[0][1]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if alt <= x1:
-            ratio = (alt - x0) / (x1 - x0)
-            return y0 + (y1 - y0) * ratio
-
-    # extrapolação conservadora acima do último ponto
-    extra_1000m = (alt - points[-1][0]) / 1000.0
-    factor = points[-1][1] - (0.06 * extra_1000m)
-    return max(0.70, round(factor, 3))
+    # Limite operacional para evitar valores matemáticos negativos fora da faixa usual.
+    alt = min(alt, 10000.0)
+    factor = (1.0 - 2.25577e-5 * alt) ** 5.25588
+    return max(0.10, min(1.0, round(factor, 3)))
 
 
 def surface_aeration_base_factor(temp_c: float) -> float:
@@ -219,8 +216,12 @@ def _surface_effective_sort(equipment: dict, temp_factor: float, altitude_factor
 
 
 def _surface_max_units_per_tank(system_type: str, technology: str) -> int:
+    """Limite físico-operacional conservador por tanque."""
     if technology == "Chafariz":
-        return 2
+        # Premissa validada no projeto: para chafariz, adotar no máximo 1 unidade por tanque.
+        # Se a altitude/demanda exigir mais que isso, o cenário deve acusar restrição técnica
+        # em vez de aumentar artificialmente a oferta instalada.
+        return 1
     if technology == "Pás":
         return 2
     return 1
@@ -243,6 +244,16 @@ def suggest_surface_aerator(
     field_factor: float,
     geometry: dict | None = None,
 ) -> dict:
+    """
+    Dimensiona aeradores superficiais com restrição física por tanque.
+
+    Regra técnica importante:
+    - a demanda biológica de O₂ do lote não aumenta apenas por altitude;
+    - a oferta efetiva de cada equipamento diminui pela altitude;
+    - em modo automático, o sistema pode aumentar o número de equipamentos até o limite físico;
+    - se a quantidade exigida passar do limite físico por tanque, o cenário é marcado como inadequado
+      e a oferta instalada fica limitada ao máximo instalável.
+    """
     library = FOUNTAIN_LIBRARY if technology == "Chafariz" else PADDLEWHEEL_LIBRARY
     allowed = _surface_technology_allowed(system_type, technology)
     max_units = _surface_max_units_per_tank(system_type, technology)
@@ -250,20 +261,43 @@ def suggest_surface_aerator(
 
     best = None
     for equipment in library:
+        sea_level_effective_sort = _surface_effective_sort(equipment, temp_factor, 1.0, field_factor)
         effective_sort = _surface_effective_sort(equipment, temp_factor, altitude_factor, field_factor)
-        qty = math.ceil(oxygen_demand_per_tank_kg_h / effective_sort) if effective_sort > 0 else max_units + 1
+
+        qty_required = math.ceil(oxygen_demand_per_tank_kg_h / effective_sort) if effective_sort > 0 else max_units + 1
+        qty_required = max(qty_required, 0)
+        qty_installed = min(qty_required, max_units) if allowed else 0
+
         geom_allowed, geom_warning = _surface_geometry_check(technology, equipment, geometry)
-        feasible = allowed and geom_allowed and qty <= max_units
-        installed_supply = effective_sort * max(qty, 0)
+        feasible = allowed and geom_allowed and qty_required <= max_units
+
+        installed_supply = effective_sort * qty_installed
+        sea_level_supply = sea_level_effective_sort * qty_installed
+        supply_shortfall = max(0.0, oxygen_demand_per_tank_kg_h - installed_supply)
         peak_use_pct = (oxygen_demand_per_tank_kg_h / installed_supply * 100.0) if installed_supply > 0 else 999.0
-        excess_ratio = (installed_supply / oxygen_demand_per_tank_kg_h) if oxygen_demand_per_tank_kg_h > 0 else 999.0
+        excess_ratio = (installed_supply / oxygen_demand_per_tank_kg_h) if oxygen_demand_per_tank_kg_h > 0 else 0.0
         preferred_peak_target = 85.0
+
+        if not allowed:
+            warning = f"Tecnologia {technology} não recomendada para {system_type}."
+        elif not geom_allowed:
+            warning = geom_warning
+        elif qty_required > max_units:
+            warning = (
+                f"A condição simulada exige cerca de {qty_required} equipamento(s) por tanque, "
+                f"mas o limite operacional adotado para {technology.lower()} é {max_units} por tanque. "
+                "A oferta exibida foi limitada ao máximo fisicamente adotado, portanto a relação oferta/demanda "
+                "pode ficar abaixo de 1,0. Recomenda-se equipamento mais robusto, outra tecnologia de aeração "
+                "ou revisão da biomassa/densidade."
+            )
+        else:
+            warning = ""
+
         score = (
             0 if feasible else 1,
-            0 if qty == 1 else 1,
-            abs(peak_use_pct - preferred_peak_target),
-            excess_ratio,
-            equipment["consumption_kwh"] * max(qty, 0),
+            supply_shortfall,
+            abs(peak_use_pct - preferred_peak_target) if feasible else 999.0,
+            equipment["consumption_kwh"] * max(qty_installed, 0),
             equipment["power_cv"],
         )
         candidate = {
@@ -275,12 +309,17 @@ def suggest_surface_aerator(
             "power_cv": equipment["power_cv"],
             "consumption_kwh_each": equipment["consumption_kwh"],
             "sort_nominal_kg_h": equipment["sort_kg_h"],
+            "sea_level_effective_sort_kg_h": sea_level_effective_sort,
             "effective_sort_kg_h": effective_sort,
-            "qty_per_tank": max(qty, 0),
+            "altitude_factor": altitude_factor,
+            "qty_required_per_tank": qty_required,
+            "qty_per_tank": max(qty_installed, 0),
             "installed_supply_per_tank_kg_h": installed_supply,
+            "sea_level_supply_per_tank_kg_h": sea_level_supply,
+            "supply_shortfall_per_tank_kg_h": supply_shortfall,
             "peak_use_pct": round(peak_use_pct, 1),
             "excess_ratio": round(excess_ratio, 3),
-            "warning": "" if feasible else (geom_warning or "Tecnologia/modelo insuficiente ou fisicamente inadequado para este arranjo."),
+            "warning": warning,
             "_score": score,
         }
         if best is None or score < best["_score"]:
@@ -293,14 +332,15 @@ def suggest_surface_aerator(
             "feasible": False,
             "max_units_per_tank": max_units,
             "model": "-",
+            "qty_required_per_tank": 0,
             "qty_per_tank": 0,
             "effective_sort_kg_h": 0.0,
             "installed_supply_per_tank_kg_h": 0.0,
+            "supply_shortfall_per_tank_kg_h": oxygen_demand_per_tank_kg_h,
             "warning": "Sem modelo disponível.",
         }
     best.pop("_score", None)
     return best
-
 
 def _blower_capacity_kg_h(blower: dict, diffusion_eff_pct: float, altitude_factor: float, field_factor: float) -> float:
     # 1 m3 de ar contém aproximadamente 0,275 kg de O2; aplicamos eficiência efetiva de transferência.
@@ -486,6 +526,7 @@ def suggest_blower(
 
     best = None
     for blower in library:
+        sea_level_cap_each = _blower_capacity_kg_h(blower, diffusion_eff_pct, 1.0, field_factor)
         cap_each = _blower_capacity_kg_h(blower, diffusion_eff_pct, altitude_factor, field_factor)
         qty = math.ceil(oxygen_demand_total_kg_h / cap_each) if cap_each > 0 else 99
         total_power = blower["power_kw"] * max(qty, 0)
@@ -498,8 +539,11 @@ def suggest_blower(
             "airflow_m3_h_each": blower["airflow_m3_h"],
             "pressure_mbar": blower["pressure_mbar"],
             "qty_system": max(qty, 0),
+            "sea_level_oxygen_capacity_each_kg_h": sea_level_cap_each,
             "effective_oxygen_capacity_each_kg_h": cap_each,
+            "altitude_factor": altitude_factor,
             "installed_supply_total_kg_h": cap_each * max(qty, 0),
+            "sea_level_supply_total_kg_h": sea_level_cap_each * max(qty, 0),
             "_score": score,
         }
         if best is None or score < best["_score"]:
@@ -986,6 +1030,7 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         "model": "-",
         "quantity_total": 0,
         "installed_oxygen_supply_kg_h": 0.0,
+        "installed_oxygen_supply_sea_level_kg_h": 0.0,
         "aeration_energy_cost_cycle": 0.0,
         "power_installed_kw": 0.0,
         "compatibility_warning": "",
@@ -997,12 +1042,14 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             chosen = suggested_fountain
             total_qty = chosen["qty_per_tank"] * inp.number_of_units
             supply = chosen["installed_supply_per_tank_kg_h"] * inp.number_of_units
+            sea_level_supply = chosen.get("sea_level_supply_per_tank_kg_h", chosen["installed_supply_per_tank_kg_h"]) * inp.number_of_units
             power_kw = chosen["consumption_kwh_each"] * total_qty
             selected_aeration.update({
                 "technology": "Chafariz",
                 "model": chosen["model"],
                 "quantity_total": total_qty,
                 "installed_oxygen_supply_kg_h": supply,
+                "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
                 "power_installed_kw": power_kw,
                 "compatibility_warning": chosen["warning"],
                 "details": chosen,
@@ -1011,12 +1058,14 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             chosen = suggested_paddle
             total_qty = chosen["qty_per_tank"] * inp.number_of_units
             supply = chosen["installed_supply_per_tank_kg_h"] * inp.number_of_units
+            sea_level_supply = chosen.get("sea_level_supply_per_tank_kg_h", chosen["installed_supply_per_tank_kg_h"]) * inp.number_of_units
             power_kw = chosen["consumption_kwh_each"] * total_qty
             selected_aeration.update({
                 "technology": "Pás",
                 "model": chosen["model"],
                 "quantity_total": total_qty,
                 "installed_oxygen_supply_kg_h": supply,
+                "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
                 "power_installed_kw": power_kw,
                 "compatibility_warning": chosen["warning"],
                 "details": chosen,
@@ -1025,17 +1074,20 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             chosen = suggested_blower
             total_qty = chosen["qty_system"]
             supply = chosen["installed_supply_total_kg_h"]
+            sea_level_supply = chosen.get("sea_level_supply_total_kg_h", supply)
             power_kw = chosen["power_kw_each"] * total_qty
             selected_aeration.update({
                 "technology": f"Soprador {chosen['blower_family']}",
                 "model": chosen["model"],
                 "quantity_total": total_qty,
                 "installed_oxygen_supply_kg_h": supply,
+                "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
                 "power_installed_kw": power_kw,
                 "details": chosen,
             })
     else:
         total_supply = 0.0
+        total_supply_sea_level = 0.0
         total_power_kw = 0.0
         total_qty = 0
         detail_rows = []
@@ -1044,7 +1096,9 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             equipment = next((e for e in FOUNTAIN_LIBRARY if e["model"] == getattr(inp, "manual_fountain_model", "")), FOUNTAIN_LIBRARY[0])
             qty = max(0, int(getattr(inp, "manual_fountain_qty", 0)))
             eff_sort = _surface_effective_sort(equipment, temp_aeration_factor, altitude_factor, field_factor)
+            eff_sort_sea_level = _surface_effective_sort(equipment, temp_aeration_factor, 1.0, field_factor)
             total_supply += eff_sort * qty
+            total_supply_sea_level += eff_sort_sea_level * qty
             total_power_kw += equipment["consumption_kwh"] * qty
             total_qty += qty
             detail_rows.append({"tecnologia": "Chafariz", "modelo": equipment["model"], "quantidade": qty})
@@ -1053,7 +1107,9 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             equipment = next((e for e in PADDLEWHEEL_LIBRARY if e["model"] == getattr(inp, "manual_paddle_model", "")), PADDLEWHEEL_LIBRARY[0])
             qty = max(0, int(getattr(inp, "manual_paddle_qty", 0)))
             eff_sort = _surface_effective_sort(equipment, temp_aeration_factor, altitude_factor, field_factor)
+            eff_sort_sea_level = _surface_effective_sort(equipment, temp_aeration_factor, 1.0, field_factor)
             total_supply += eff_sort * qty
+            total_supply_sea_level += eff_sort_sea_level * qty
             total_power_kw += equipment["consumption_kwh"] * qty
             total_qty += qty
             detail_rows.append({"tecnologia": "Pás", "modelo": equipment["model"], "quantidade": qty})
@@ -1062,7 +1118,9 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             equipment = next((e for e in RADIAL_BLOWER_LIBRARY if e["model"] == getattr(inp, "manual_radial_model", "")), RADIAL_BLOWER_LIBRARY[0])
             qty = max(0, int(getattr(inp, "manual_radial_qty", 0)))
             cap_each = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+            cap_each_sea_level = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), 1.0, field_factor)
             total_supply += cap_each * qty
+            total_supply_sea_level += cap_each_sea_level * qty
             total_power_kw += equipment["power_kw"] * qty
             total_qty += qty
             detail_rows.append({"tecnologia": "Soprador radial", "modelo": equipment["model"], "quantidade": qty})
@@ -1071,7 +1129,9 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             equipment = next((e for e in LOBULAR_BLOWER_LIBRARY if e["model"] == getattr(inp, "manual_lobular_model", "")), LOBULAR_BLOWER_LIBRARY[0])
             qty = max(0, int(getattr(inp, "manual_lobular_qty", 0)))
             cap_each = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+            cap_each_sea_level = _blower_capacity_kg_h(equipment, getattr(inp, "diffusion_efficiency_pct", 12.0), 1.0, field_factor)
             total_supply += cap_each * qty
+            total_supply_sea_level += cap_each_sea_level * qty
             total_power_kw += equipment["power_kw"] * qty
             total_qty += qty
             detail_rows.append({"tecnologia": "Soprador lobular", "modelo": equipment["model"], "quantidade": qty})
@@ -1081,10 +1141,28 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
             "model": "Múltiplos" if len(detail_rows) > 1 else (detail_rows[0]["modelo"] if detail_rows else "-"),
             "quantity_total": total_qty,
             "installed_oxygen_supply_kg_h": total_supply,
+            "installed_oxygen_supply_sea_level_kg_h": total_supply_sea_level,
             "power_installed_kw": total_power_kw,
             "details": {"rows": detail_rows},
             "compatibility_warning": "" if total_supply >= oxygen_demand_kg_h else "A soma dos equipamentos manuais não atende a demanda estimada do sistema.",
         })
+
+    altitude_warning = ""
+    if altitude_factor <= 0.35:
+        altitude_warning = (
+            "Altitude extremamente elevada: a pressão atmosférica reduz fortemente a transferência efetiva de oxigênio. "
+            "O cenário deve ser tratado como operacionalmente crítico e exige validação técnica específica."
+        )
+    elif altitude_factor <= 0.70:
+        altitude_warning = (
+            "Altitude elevada: a transferência efetiva de oxigênio foi reduzida no dimensionamento. "
+            "Confirme desempenho real dos equipamentos em campo."
+        )
+
+    if altitude_warning:
+        selected_aeration["compatibility_warning"] = (
+            f"{selected_aeration.get('compatibility_warning', '').strip()} {altitude_warning}"
+        ).strip()
 
     aeration_phase_operation, aeration_modulation_summary = _phase_aeration_modulation(inp, feeding_plan, fish_stocked, selected_aeration)
     aeration_energy_cost_cycle = aeration_modulation_summary["cost_cycle_modulated"]
@@ -1191,9 +1269,16 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         "oxygen_demand_kg_h": oxygen_demand_kg_h,
         "oxygen_demand_per_tank_kg_h": oxygen_demand_per_tank_kg_h,
         "altitude_factor": altitude_factor,
+        "altitude_transfer_factor": altitude_factor,
+        "altitude_warning": altitude_warning,
         "temp_aeration_factor": temp_aeration_factor,
         "field_factor": field_factor,
         "installed_oxygen_supply_kg_h": selected_aeration["installed_oxygen_supply_kg_h"],
+        "installed_oxygen_supply_sea_level_kg_h": selected_aeration.get("installed_oxygen_supply_sea_level_kg_h", selected_aeration["installed_oxygen_supply_kg_h"]),
+        "oxygen_offer_demand_ratio": (
+            selected_aeration["installed_oxygen_supply_kg_h"] / oxygen_demand_kg_h
+            if oxygen_demand_kg_h > 0 else None
+        ),
         "required_aerators": selected_aeration["quantity_total"],
         "required_aerators_auto": selected_aeration["quantity_total"] if aeration_mode == "Automático" else 0,
         "aeration_energy_cost_cycle": aeration_energy_cost_cycle,

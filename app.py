@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import os
 from pathlib import Path
 
@@ -455,6 +456,34 @@ button:disabled span {{
     color: #102A43 !important;
 }}
 
+
+/* ============================================================
+   BLOCO DE USUÁRIO CONECTADO
+   ============================================================ */
+
+.connected-user-box {{
+    background: rgba(255, 255, 255, 0.18) !important;
+    border: 1px solid rgba(255, 255, 255, 0.34) !important;
+    border-radius: 12px !important;
+    padding: 10px 12px !important;
+    margin-top: 8px !important;
+    margin-bottom: 8px !important;
+}}
+
+.connected-user-label {{
+    color: #E6FFFA !important;
+    font-size: 0.82rem !important;
+    font-weight: 800 !important;
+    margin-bottom: 2px !important;
+}}
+
+.connected-user-email {{
+    color: #FFFFFF !important;
+    font-size: 0.92rem !important;
+    font-weight: 800 !important;
+    word-break: break-word !important;
+}}
+
 /* ============================================================
    RESPONSIVO
    ============================================================ */
@@ -658,6 +687,44 @@ def _build_aeration_phase_table_rows(base_data: dict, form_data: dict) -> list[d
     return output
 
 
+def _apply_altitude_correction_to_aeration_results(base_data: dict, form_data: dict) -> dict:
+    """
+    Retorna um resumo da correção por altitude sem recalcular novamente os valores.
+
+    A correção efetiva agora é feita no motor de cálculo (calculator.py).
+    Esta função serve apenas para exibição na interface, evitando dupla penalização.
+    """
+    if not isinstance(base_data, dict):
+        return {}
+
+    altitude_m = _safe_float_for_ui(form_data.get("site_altitude_m"), 0.0) or 0.0
+    altitude_factor = _safe_float_for_ui(
+        base_data.get("altitude_transfer_factor", base_data.get("altitude_factor")),
+        altitude_transfer_factor(altitude_m),
+    ) or altitude_transfer_factor(altitude_m)
+
+    installed_supply_sea_level = _safe_float_for_ui(
+        base_data.get("installed_oxygen_supply_sea_level_kg_h"),
+        base_data.get("installed_oxygen_supply_kg_h"),
+    ) or 0.0
+    installed_supply_corrected = _safe_float_for_ui(base_data.get("installed_oxygen_supply_kg_h"), 0.0) or 0.0
+    oxygen_demand_total = _safe_float_for_ui(base_data.get("oxygen_demand_kg_h"), 0.0) or 0.0
+    required_aerators = max(0, int(_safe_float_for_ui(base_data.get("required_aerators"), 0) or 0))
+    ratio = installed_supply_corrected / oxygen_demand_total if oxygen_demand_total > 0 else None
+
+    return {
+        "altitude_m": altitude_m,
+        "altitude_factor": altitude_factor,
+        "required_aerators_original": required_aerators,
+        "required_aerators_corrected": required_aerators,
+        "installed_supply_original": installed_supply_sea_level,
+        "installed_supply_same_equipment": installed_supply_sea_level * altitude_factor,
+        "installed_supply_corrected": installed_supply_corrected,
+        "oxygen_demand_total": oxygen_demand_total,
+        "oxygen_offer_demand_ratio": ratio,
+    }
+
+
 sample_data = {
     "project_name": "Projeto tilápia tanques revestidos",
     "author_name": "Luiz Henrique Sousa Salgado",
@@ -741,69 +808,6 @@ for i, row in enumerate(DEFAULT_FEEDING_CURVE, start=1):
     sample_data[f"phase{i}_pellet_mm"] = row["pellet_mm"]
     sample_data[f"phase{i}_feed_price_per_kg"] = row["feed_price_per_kg"]
     sample_data[f"phase{i}_fcr"] = row.get("phase_fcr", 1.60)
-
-
-
-def altitude_transfer_factor(altitude_m: float) -> float:
-    """
-    Fator simplificado de correção da transferência de oxigênio por altitude.
-    Base operacional da v1:
-    0 m -> 1.00
-    500 m -> 0.95
-    1000 m -> 0.90
-    1500 m -> 0.85
-    2000 m -> 0.79
-    """
-    try:
-        alt = max(0.0, float(altitude_m))
-    except (TypeError, ValueError):
-        alt = 0.0
-
-    if alt <= 0:
-        return 1.00
-    if alt <= 500:
-        return 0.95
-    if alt <= 1000:
-        return 0.90
-    if alt <= 1500:
-        return 0.85
-    if alt <= 2000:
-        return 0.79
-
-    extra_blocks = (alt - 2000) / 500.0
-    factor = 0.79 - (0.04 * extra_blocks)
-    return max(0.60, round(factor, 3))
-
-
-
-def surface_aeration_base_factor(temp_c: float) -> float:
-    """
-    Fator-base simplificado de campo para aeradores superficiais
-    (chafariz e pás) na v1 do sistema.
-
-    Referência operacional:
-    - a 28 °C -> 0,50
-    - temperaturas mais altas reduzem a eficiência efetiva
-    - temperaturas mais baixas aumentam levemente a eficiência efetiva
-    """
-    try:
-        temp = float(temp_c)
-    except (TypeError, ValueError):
-        temp = 28.0
-
-    if temp <= 20:
-        return 0.60
-    if temp <= 24:
-        return 0.55
-    if temp <= 28:
-        return 0.50
-    if temp <= 30:
-        return 0.47
-    if temp <= 32:
-        return 0.44
-    if temp <= 34:
-        return 0.41
-    return 0.38
 
 
 
@@ -969,7 +973,15 @@ with st.sidebar:
                 st.rerun()
 
         if st.session_state.get("auth_user_email"):
-            st.caption(f"Usuário conectado: {st.session_state['auth_user_email']}")
+            st.markdown(
+                f"""
+<div class="connected-user-box">
+    <div class="connected-user-label">Usuário conectado</div>
+    <div class="connected-user-email">{st.session_state['auth_user_email']}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
         else:
             st.warning("Faça login para usar o armazenamento remoto.")
 
@@ -1217,6 +1229,26 @@ with tab1:
             fd["capex_total"] = st.number_input("CAPEX total manual (R$)", min_value=0.0, value=float(fd.get("capex_total", 0.0)), step=1000.0)
         fd["notes"] = st.text_area("Observações", fd["notes"], height=120)
 
+    if fd.get("economic_model_mode") == "Simplificado":
+        ref_units = max(1.0, float(fd.get("cost_reference_units", fd.get("number_of_units", 1)) or 1))
+        current_units = max(1.0, float(fd.get("number_of_units", 1) or 1))
+        scale_factor = current_units / ref_units if fd.get("cost_scaling_mode") == "Escalonar pelo nº de tanques" else 1.0
+        st.markdown("#### Prévia dos custos simplificados aplicados")
+        st.caption(
+            "Esta prévia mostra o efeito da opção de escala dos custos. "
+            "Em 'Fixos', os valores digitados são usados como estão. "
+            "Em 'Escalonar pelo nº de tanques', os custos são multiplicados pelo fator tanques informados / unidades de referência."
+        )
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        with pc1:
+            st.metric("Fator aplicado", f"{num(scale_factor, 2)}x")
+        with pc2:
+            st.metric("Energia/ciclo aplicada", brl(float(fd.get("electricity_cost_cycle", 0.0)) * scale_factor))
+        with pc3:
+            st.metric("Mão de obra/ciclo aplicada", brl(float(fd.get("labor_cost_cycle", 0.0)) * scale_factor))
+        with pc4:
+            st.metric("Outros custos/ciclo aplicados", brl(float(fd.get("other_costs_cycle", 0.0)) * scale_factor))
+
     st.caption("A altura da água é sugerida automaticamente conforme o tipo de estrutura, mas pode ser alterada pelo usuário. Alterações na geometria mudam volume útil, biomassa por tanque, produção e aeração.")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1391,6 +1423,21 @@ with tab4:
             value=float(fd.get("electricity_price_kwh", 0.45)),
             step=0.05,
         )
+
+    current_altitude_factor = altitude_transfer_factor(fd.get("site_altitude_m", 0.0))
+    if float(fd.get("site_altitude_m", 0.0) or 0.0) >= 4000:
+        st.error(
+            "Altitude extremamente elevada para o cenário aquícola. O sistema penaliza fortemente a transferência "
+            "de oxigênio e recomenda tratar a simulação como operacionalmente crítica."
+        )
+    elif float(fd.get("site_altitude_m", 0.0) or 0.0) >= 2500:
+        st.warning(
+            "Altitude elevada: a eficiência de transferência de oxigênio foi reduzida no cálculo. "
+            "Valide equipamentos e manejo com dados locais."
+        )
+    st.caption(
+        f"Fator operacional de correção por altitude aplicado na aeração: {num(current_altitude_factor, 2)}x."
+    )
 
     fd["aeration_power_mode"] = st.selectbox(
         "Modo de operação da aeração ao longo do ciclo",
@@ -1578,8 +1625,57 @@ st.session_state.latest_results = results
 base_res = results["base"]
 _normalize_production_schedule_for_display(results, fd)
 base_res = results["base"]
+altitude_correction_ui = _apply_altitude_correction_to_aeration_results(base_res, fd_calc)
+base_res = results["base"]
 alt_factor_ui = altitude_transfer_factor(fd_calc.get("site_altitude_m", 0.0))
 temp_factor_ui = surface_aeration_base_factor(fd_calc.get("water_temperature_c", 28.0))
+
+
+with tab2:
+    feeding_plan_calc = pd.DataFrame(base_res.get("feeding_plan", []))
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.subheader("Resultado da curva de crescimento")
+    gcalc1, gcalc2, gcalc3 = st.columns(3)
+    with gcalc1:
+        st.metric("Ciclo biológico estimado", f"{num(base_res.get('estimated_cycle_days'), 0)} dias")
+    with gcalc2:
+        total_gain_g = max(float(fd.get("target_weight_g", 0.0)) - float(fd.get("initial_weight_g", 0.0)), 0.0)
+        cycle_days = float(base_res.get("estimated_cycle_days", 0.0) or 0.0)
+        avg_daily_gain = total_gain_g / cycle_days if cycle_days > 0 else 0.0
+        st.metric("Ganho médio estimado", f"{num(avg_daily_gain, 2)} g/peixe/dia")
+    with gcalc3:
+        st.metric("Ajuste aplicado", f"{num(fd.get('growth_curve_adjustment_pct', 100.0), 0)}%")
+
+    if not feeding_plan_calc.empty:
+        growth_cols = [
+            "phase_name",
+            "weight_range",
+            "days_in_phase",
+            "phase_daily_growth_g",
+            "phase_fcr",
+        ]
+        growth_view = feeding_plan_calc[[c for c in growth_cols if c in feeding_plan_calc.columns]].copy()
+        growth_view = growth_view.rename(
+            columns={
+                "phase_name": "Fase",
+                "weight_range": "Faixa de peso",
+                "days_in_phase": "Duração estimada (dias)",
+                "phase_daily_growth_g": "Ganho médio da fase (g/dia)",
+                "phase_fcr": "FCR",
+            }
+        )
+        for col in ["Duração estimada (dias)"]:
+            if col in growth_view.columns:
+                growth_view[col] = pd.to_numeric(growth_view[col], errors="coerce").round(0).astype("Int64")
+        for col in ["Ganho médio da fase (g/dia)", "FCR"]:
+            if col in growth_view.columns:
+                growth_view[col] = pd.to_numeric(growth_view[col], errors="coerce").round(2)
+        st.dataframe(growth_view, use_container_width=True, hide_index=True)
+    st.caption(
+        "Esta tabela confirma que a curva de crescimento está alimentando o cálculo do ciclo. "
+        "O peso inicial, peso final, temperatura e o ajuste global alteram a duração das fases e o ciclo total."
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 with tab1:
@@ -1625,6 +1721,21 @@ with tab4:
         st.metric("Oferta instalada de O₂", f"{num(base_res.get('installed_oxygen_supply_kg_h'))} kg/h")
     with a4:
         st.metric("Equipamentos instalados", f"{int(base_res.get('required_aerators', 0))}")
+
+    if altitude_correction_ui:
+        st.caption(
+            "Correção por altitude: "
+            f"altitude = {num(altitude_correction_ui.get('altitude_m'), 0)} m; "
+            f"fator = {num(altitude_correction_ui.get('altitude_factor'), 2)}x; "
+            f"oferta equivalente ao nível do mar = {num(altitude_correction_ui.get('installed_supply_original'), 2)} kg/h; "
+            f"oferta efetiva corrigida = {num(altitude_correction_ui.get('installed_supply_corrected'), 2)} kg/h; "
+            f"relação oferta/demanda = {num(altitude_correction_ui.get('oxygen_offer_demand_ratio'), 2)}x."
+        )
+        if abs(float(altitude_correction_ui.get("installed_supply_original", 0) or 0) - float(altitude_correction_ui.get("installed_supply_corrected", 0) or 0)) > 0.01:
+            st.info(
+                "A oferta de oxigênio exibida já está corrigida pela altitude informada. "
+                "Quanto maior a altitude, menor a eficiência efetiva de transferência de oxigênio e maior pode ser a necessidade de equipamentos."
+            )
 
     r1, r2 = st.columns(2)
     with r1:
@@ -1736,6 +1847,13 @@ with tab5:
                 results,
                 st.session_state.current_project_id,
             )
+            project_name_for_save = str(st.session_state.dash_form_data.get("project_name", "Projeto sem nome")).strip() or "Projeto sem nome"
+            payload["project_name"] = project_name_for_save
+            payload["name"] = project_name_for_save
+            payload.setdefault("project_meta", {})
+            payload["project_meta"]["project_name"] = project_name_for_save
+            payload.setdefault("inputs", {})
+            payload["inputs"]["project_name"] = project_name_for_save
             try:
                 project_id = _save_project_active(payload, st.session_state.current_project_id)
                 st.session_state.current_project_id = project_id
