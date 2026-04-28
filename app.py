@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -65,7 +66,7 @@ if BG_IMAGE_BASE64:
     app_background_css = f"""
     background-image:
         linear-gradient(
-            rgba(238, 247, 244, 0.42),
+            rgba(238, 247, 244, 0.22),
             rgba(238, 247, 244, 0.38)
         ),
         url("data:image/png;base64,{BG_IMAGE_BASE64}") !important;
@@ -96,7 +97,7 @@ st.markdown(
 }}
 
 [data-testid="stHeader"] {{
-    background: rgba(238, 247, 244, 0.54) !important;
+    background: rgba(238, 247, 244, 0.58) !important;
     backdrop-filter: blur(6px) !important;
 }}
 
@@ -804,6 +805,24 @@ def surface_aeration_base_factor(temp_c: float) -> float:
         return 0.41
     return 0.38
 
+
+
+def _is_streamlit_cloud_runtime() -> bool:
+    """Detecta execução no Streamlit Community Cloud."""
+    app_env = os.getenv("APP_ENV", "").strip().lower()
+    cloud_flag = os.getenv("STREAMLIT_CLOUD", "").strip().lower()
+    return (
+        Path("/mount/src").exists()
+        or app_env in {"cloud", "production", "prod"}
+        or cloud_flag in {"1", "true", "yes"}
+    )
+
+
+def _supabase_required() -> bool:
+    """Na nuvem, se a Supabase estiver configurada, o modo local fica bloqueado."""
+    return is_supabase_configured() and _is_streamlit_cloud_runtime()
+
+
 if "dash_form_data" not in st.session_state:
     st.session_state.dash_form_data = sample_data.copy()
 
@@ -817,7 +836,7 @@ if "latest_results" not in st.session_state:
     st.session_state.latest_results = None
 
 if "storage_mode" not in st.session_state:
-    st.session_state.storage_mode = "Local"
+    st.session_state.storage_mode = "Supabase beta" if _supabase_required() else "Local"
 
 if "auth_user_id" not in st.session_state:
     st.session_state.auth_user_id = None
@@ -841,38 +860,52 @@ def _use_supabase_storage() -> bool:
     )
 
 
+def _require_supabase_login() -> None:
+    raise RuntimeError("Faça login na Supabase beta para usar projetos salvos na nuvem.")
+
+
 def _list_projects_active() -> list[dict]:
-    if _use_supabase_storage():
-        return list_projects_remote(st.session_state["auth_user_id"])
+    if st.session_state.get("storage_mode") == "Supabase beta":
+        if _use_supabase_storage():
+            return list_projects_remote(st.session_state["auth_user_id"])
+        return []
     return list_projects()
 
 
 def _load_project_active(project_id: str) -> dict:
-    if _use_supabase_storage():
-        return load_project_remote(project_id, st.session_state["auth_user_id"])
+    if st.session_state.get("storage_mode") == "Supabase beta":
+        if _use_supabase_storage():
+            return load_project_remote(project_id, st.session_state["auth_user_id"])
+        _require_supabase_login()
     return load_project(project_id)
 
 
 def _save_project_active(payload: dict, current_project_id: str | None = None) -> str:
-    if _use_supabase_storage():
-        return save_project_remote(
-            payload,
-            st.session_state["auth_user_id"],
-            current_project_id=current_project_id,
-        )
+    if st.session_state.get("storage_mode") == "Supabase beta":
+        if _use_supabase_storage():
+            return save_project_remote(
+                payload,
+                st.session_state["auth_user_id"],
+                current_project_id=current_project_id,
+            )
+        _require_supabase_login()
     return save_project(payload)
 
 
 def _delete_project_active(project_id: str) -> None:
-    if _use_supabase_storage():
-        delete_project_remote(project_id, st.session_state["auth_user_id"])
-    else:
-        delete_project(project_id)
+    if st.session_state.get("storage_mode") == "Supabase beta":
+        if _use_supabase_storage():
+            delete_project_remote(project_id, st.session_state["auth_user_id"])
+            return
+        _require_supabase_login()
+    delete_project(project_id)
 
 
 def _duplicate_project_active(project_id: str) -> str:
-    if _use_supabase_storage():
-        return duplicate_project_remote(project_id, st.session_state["auth_user_id"])
+    if st.session_state.get("storage_mode") == "Supabase beta":
+        if _use_supabase_storage():
+            return duplicate_project_remote(project_id, st.session_state["auth_user_id"])
+        _require_supabase_login()
     return duplicate_project(project_id)
 
 
@@ -894,12 +927,17 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Persistência")
 
-    if is_supabase_configured():
+    if _supabase_required():
+        st.session_state.storage_mode = "Supabase beta"
+        st.success("Modo de armazenamento: Supabase beta obrigatório na nuvem.")
+        st.caption("Projetos salvos, abertura, duplicação e exclusão usam exclusivamente o banco Supabase.")
+    elif is_supabase_configured():
         st.session_state.storage_mode = st.radio(
             "Modo de armazenamento",
             ["Local", "Supabase beta"],
             index=0 if st.session_state.get("storage_mode", "Local") == "Local" else 1,
             key="storage_mode_radio",
+            help="Local é apenas para desenvolvimento no notebook. Na nuvem o sistema força Supabase beta.",
         )
     else:
         st.session_state.storage_mode = "Local"
@@ -1031,7 +1069,7 @@ with st.sidebar:
 - Confira o dashboard
 - Gere o projeto completo
 - Salve o projeto com resultados
-- Use Supabase beta para testes remotos
+- Na nuvem, use login Supabase beta para salvar e abrir projetos
 """
     )
 
