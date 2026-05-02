@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import math
 import os
+from dataclasses import fields
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -14,6 +15,40 @@ def get_image_base64(image_path: str) -> str:
     if not path.exists():
         return ""
     return base64.b64encode(path.read_bytes()).decode()
+
+
+def _slugify_filename(value: str, fallback: str = "projeto_tilapia_dashboard") -> str:
+    """Gera um nome seguro para arquivos a partir do nome do projeto."""
+    raw = str(value or "").strip()
+    if not raw:
+        raw = fallback
+    replacements = {
+        "á": "a", "à": "a", "â": "a", "ã": "a", "ä": "a",
+        "é": "e", "ê": "e", "è": "e", "ë": "e",
+        "í": "i", "ì": "i", "î": "i", "ï": "i",
+        "ó": "o", "ô": "o", "õ": "o", "ò": "o", "ö": "o",
+        "ú": "u", "ù": "u", "û": "u", "ü": "u",
+        "ç": "c",
+        "Á": "A", "À": "A", "Â": "A", "Ã": "A", "Ä": "A",
+        "É": "E", "Ê": "E", "È": "E", "Ë": "E",
+        "Í": "I", "Ì": "I", "Î": "I", "Ï": "I",
+        "Ó": "O", "Ô": "O", "Õ": "O", "Ò": "O", "Ö": "O",
+        "Ú": "U", "Ù": "U", "Û": "U", "Ü": "U",
+        "Ç": "C",
+    }
+    for src, dst in replacements.items():
+        raw = raw.replace(src, dst)
+    safe = []
+    for ch in raw:
+        if ch.isalnum():
+            safe.append(ch.lower())
+        elif ch in (" ", "-", "_"):
+            safe.append("_")
+    name = "".join(safe)
+    while "__" in name:
+        name = name.replace("__", "_")
+    name = name.strip("_")
+    return name or fallback
 
 
 from aqua_project_agent_gui_dashboard_v1.calculator import (
@@ -484,6 +519,95 @@ button:disabled span {{
     word-break: break-word !important;
 }}
 
+
+/* ============================================================
+   BARRAS DE ROLAGEM — ALTO CONTRASTE
+   ============================================================ */
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="stSidebar"],
+[data-testid="stSidebarContent"],
+section[data-testid="stSidebar"] {{
+    scrollbar-color: #011F2A #063E43 !important;
+    scrollbar-width: auto !important;
+}}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+[data-testid="stAppViewContainer"]::-webkit-scrollbar,
+[data-testid="stMain"]::-webkit-scrollbar,
+*::-webkit-scrollbar {{
+    width: 20px !important;
+    height: 20px !important;
+}}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+[data-testid="stAppViewContainer"]::-webkit-scrollbar-track,
+[data-testid="stMain"]::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {{
+    background: #063E43 !important;
+    border-radius: 12px !important;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28) !important;
+}}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+[data-testid="stAppViewContainer"]::-webkit-scrollbar-thumb,
+[data-testid="stMain"]::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {{
+    background: #011F2A !important;
+    border-radius: 12px !important;
+    border: 3px solid #19A39A !important;
+    min-height: 56px !important;
+}}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+[data-testid="stAppViewContainer"]::-webkit-scrollbar-thumb:hover,
+[data-testid="stMain"]::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {{
+    background: #000F16 !important;
+    border-color: #7AE0DA !important;
+}}
+
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner,
+[data-testid="stAppViewContainer"]::-webkit-scrollbar-corner,
+[data-testid="stMain"]::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {{
+    background: #063E43 !important;
+}}
+
+/* Sidebar: mantém o mesmo padrão forte da barra principal */
+[data-testid="stSidebar"] *::-webkit-scrollbar,
+[data-testid="stSidebar"]::-webkit-scrollbar,
+section[data-testid="stSidebar"] *::-webkit-scrollbar {{
+    width: 20px !important;
+}}
+
+[data-testid="stSidebar"] *::-webkit-scrollbar-track,
+[data-testid="stSidebar"]::-webkit-scrollbar-track,
+section[data-testid="stSidebar"] *::-webkit-scrollbar-track {{
+    background: #063E43 !important;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28) !important;
+}}
+
+[data-testid="stSidebar"] *::-webkit-scrollbar-thumb,
+[data-testid="stSidebar"]::-webkit-scrollbar-thumb,
+section[data-testid="stSidebar"] *::-webkit-scrollbar-thumb {{
+    background: #011F2A !important;
+    border: 3px solid #19A39A !important;
+}}
+
+[data-testid="stSidebar"] *::-webkit-scrollbar-thumb:hover,
+[data-testid="stSidebar"]::-webkit-scrollbar-thumb:hover,
+section[data-testid="stSidebar"] *::-webkit-scrollbar-thumb:hover {{
+    background: #000F16 !important;
+    border-color: #7AE0DA !important;
+}}
+
 /* ============================================================
    RESPONSIVO
    ============================================================ */
@@ -725,6 +849,34 @@ def _apply_altitude_correction_to_aeration_results(base_data: dict, form_data: d
     }
 
 
+def _estimate_preliminary_capex_from_form(form_data: dict, geometry: dict) -> dict:
+    """Estimativa preliminar de CAPEX por composição, sem substituir orçamento real."""
+    units = max(1.0, _safe_float_for_ui(form_data.get("number_of_units"), 1.0) or 1.0)
+    unit_volume = max(0.1, float(geometry.get("volume_m3", form_data.get("unit_volume_m3", 100.0)) or 100.0))
+    total_volume = units * unit_volume
+    # Valor preliminar parametrizado. Deve ser revisado por cotação atualizada.
+    tank_structure = total_volume * 500.0
+    hydraulics = tank_structure * 0.16
+    aeration = tank_structure * 0.12
+    electrical = tank_structure * 0.10
+    backup = tank_structure * 0.08
+    civil_install = tank_structure * 0.14
+    subtotal = tank_structure + hydraulics + aeration + electrical + backup + civil_install
+    contingency = subtotal * 0.15
+    total = subtotal + contingency
+    return {
+        "Tanques/estrutura": tank_structure,
+        "Hidráulica e drenagem": hydraulics,
+        "Aeração/oxigenação": aeration,
+        "Elétrica/comando": electrical,
+        "Backup/gerador": backup,
+        "Obras civis/instalação": civil_install,
+        "Contingência técnica": contingency,
+        "CAPEX preliminar total": total,
+        "Premissa": "Estimativa preliminar por volume útil e composição percentual. Carece levantamento de preços atualizado.",
+    }
+
+
 sample_data = {
     "project_name": "Projeto tilápia tanques revestidos",
     "author_name": "Luiz Henrique Sousa Salgado",
@@ -751,6 +903,7 @@ sample_data = {
     "labor_cost_cycle": 18000.0,
     "other_costs_cycle": 15000.0,
     "capex_total": 450000.0,
+    "capex_component_mode_note": "Estimativa preliminar. Atualizar com cotação real de tanques, hidráulica, elétrica, aeração, backup e instalação.",
     "cost_scaling_mode": "Fixos (não escalar)",
     "cost_reference_units": 9,
     "economic_model_mode": "Simplificado",
@@ -919,7 +1072,13 @@ with st.sidebar:
     st.markdown("---")
 
     output_dir = st.text_input("Pasta de saída", "outputs")
-    output_name = st.text_input("Nome base dos arquivos", "projeto_tilapia_dashboard")
+    project_name_for_output = st.session_state.get("dash_form_data", {}).get("project_name", "Projeto tilápia tanques revestidos")
+    suggested_output_name = _slugify_filename(project_name_for_output)
+    output_name = st.text_input(
+        "Nome base dos arquivos",
+        value=suggested_output_name,
+        help="Por padrão, o nome do arquivo acompanha o nome informado no campo Nome do projeto.",
+    )
 
     if st.button("Carregar exemplo", key="btn_carregar_exemplo"):
         st.session_state.dash_form_data = sample_data.copy()
@@ -1196,7 +1355,7 @@ with tab1:
     st.markdown("#### Modelo econômico")
     e1, e2 = st.columns(2)
     with e1:
-        fd["economic_model_mode"] = st.selectbox("Modelo econômico", ["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"], index=["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"].index(fd.get("economic_model_mode", "Simplificado") if fd.get("economic_model_mode", "Simplificado") in ["Simplificado", "Fixo + por tanque", "Manual (CAPEX total)"] else "Simplificado"))
+        fd["economic_model_mode"] = st.selectbox("Modelo econômico", ["Simplificado", "Fixo + por tanque", "Composição preliminar", "Manual (CAPEX total)"], index=["Simplificado", "Fixo + por tanque", "Composição preliminar", "Manual (CAPEX total)"].index(fd.get("economic_model_mode", "Simplificado") if fd.get("economic_model_mode", "Simplificado") in ["Simplificado", "Fixo + por tanque", "Composição preliminar", "Manual (CAPEX total)"] else "Simplificado"))
     with e2:
         if fd["economic_model_mode"] == "Simplificado":
             fd["cost_scaling_mode"] = st.selectbox("Escala dos custos simplificados", ["Fixos (não escalar)", "Escalonar pelo nº de tanques"], index=["Fixos (não escalar)", "Escalonar pelo nº de tanques"].index(fd.get("cost_scaling_mode", "Fixos (não escalar)") if fd.get("cost_scaling_mode", "Fixos (não escalar)") in ["Fixos (não escalar)", "Escalonar pelo nº de tanques"] else "Fixos (não escalar)"))
@@ -1225,6 +1384,17 @@ with tab1:
             fd["other_cost_per_unit_cycle"] = st.number_input("Outros custos por tanque por ciclo (R$)", min_value=0.0, value=float(fd.get("other_cost_per_unit_cycle", 0.0)), step=100.0)
             fd["capex_fixed_total"] = st.number_input("CAPEX fixo total (R$)", min_value=0.0, value=float(fd.get("capex_fixed_total", 0.0)), step=1000.0)
             fd["capex_per_unit"] = st.number_input("CAPEX por tanque (R$)", min_value=0.0, value=float(fd.get("capex_per_unit", 0.0)), step=500.0)
+        elif fd["economic_model_mode"] == "Composição preliminar":
+            capex_preview = _estimate_preliminary_capex_from_form(fd, geom_ui)
+            fd["capex_total"] = float(capex_preview["CAPEX preliminar total"])
+            st.metric("CAPEX preliminar estimado", brl(fd["capex_total"]))
+            st.caption("Estimativa preliminar por composição. Atualize com cotações reais antes de usar para financiamento ou decisão de investimento.")
+            capex_df = pd.DataFrame([
+                {"Componente": k, "Valor estimado": brl(v)}
+                for k, v in capex_preview.items()
+                if isinstance(v, (int, float)) and k != "CAPEX preliminar total"
+            ])
+            st.dataframe(capex_df, use_container_width=True, hide_index=True)
         else:
             fd["capex_total"] = st.number_input("CAPEX total manual (R$)", min_value=0.0, value=float(fd.get("capex_total", 0.0)), step=1000.0)
         fd["notes"] = st.text_area("Observações", fd["notes"], height=120)
@@ -1465,23 +1635,46 @@ with tab4:
     )
 
     if fd["aeration_mode"] == "Automático":
+        aeration_tech_options = [
+            "Chafariz",
+            "Pás",
+            "Soprador",
+            "Híbrido: Chafariz + Pás",
+            "Híbrido: Soprador + Pás",
+            "Híbrido: Soprador + Chafariz",
+            "Híbrido: Soprador + Chafariz + Pás",
+        ]
+        current_aeration_tech = fd.get("automatic_aeration_technology", "Chafariz")
+        if current_aeration_tech not in aeration_tech_options:
+            current_aeration_tech = "Chafariz"
         fd["automatic_aeration_technology"] = st.selectbox(
             "Tecnologia automática",
-            ["Chafariz", "Pás", "Soprador"],
-            index=["Chafariz", "Pás", "Soprador"].index(fd.get("automatic_aeration_technology", "Chafariz")),
+            aeration_tech_options,
+            index=aeration_tech_options.index(current_aeration_tech),
+            help=(
+                "Use as opções híbridas quando fizer sentido combinar oxigenação superficial, difusão por soprador "
+                "e circulação/vórtice para concentração de sólidos."
+            ),
         )
-        if fd["automatic_aeration_technology"] == "Soprador":
+        if fd["automatic_aeration_technology"] in ("Chafariz", "Pás", "Híbrido: Chafariz + Pás"):
+            st.caption("A admissibilidade agora considera o diâmetro/área do tanque. Tanques circulares grandes podem aceitar arranjos A1–A4 de chafarizes e também aeradores de pás como apoio à circulação/vórtice.")
+        if "Soprador" in fd["automatic_aeration_technology"]:
+            st.caption("Para sopradores, a simulação estima também a metragem preliminar de mangueira porosa/difusor por tanque. Ajuste com dados reais do fabricante.")
             fd["blower_type"] = st.selectbox(
                 "Tipo de soprador",
                 ["Automático", "Radial", "Lobular"],
                 index=["Automático", "Radial", "Lobular"].index(fd.get("blower_type", "Automático")),
             )
             fd["diffusion_efficiency_pct"] = st.number_input(
-                "Eficiência efetiva de transferência do sistema de difusão (%)",
+                "Eficiência efetiva de transferência do sistema de difusão (%) — base para OTR/m",
                 min_value=1.0,
                 max_value=100.0,
                 value=float(fd.get("diffusion_efficiency_pct", 12.0)),
                 step=1.0,
+            )
+            st.caption(
+                "12% permanece como premissa conservadora/editável para mangueira porosa BERAQUA sem SOTR/SAE certificado. "
+                "O cálculo da metragem usa OTR preliminar por metro: conservador, padrão, otimista ou alta eficiência conforme este campo."
             )
     else:
         st.caption("No modo manual, o sistema permite combinar tecnologias. A recomendação automática continuará visível abaixo como referência técnica.")
@@ -1508,7 +1701,7 @@ with tab4:
                 current = fd.get("manual_radial_model", radial_models[0])
                 fd["manual_radial_model"] = st.selectbox("Modelo de soprador radial", radial_models, index=radial_models.index(current) if current in radial_models else 0)
                 fd["manual_radial_qty"] = st.number_input("Quantidade de sopradores radiais", min_value=0, value=int(fd.get("manual_radial_qty", 1)), step=1)
-                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%)", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_radial")
+                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%) — base para OTR/m", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_radial")
 
             fd["manual_use_lobular"] = st.checkbox("Ativar soprador lobular", value=bool(fd.get("manual_use_lobular", False)))
             if fd["manual_use_lobular"]:
@@ -1516,7 +1709,7 @@ with tab4:
                 current = fd.get("manual_lobular_model", lobular_models[0])
                 fd["manual_lobular_model"] = st.selectbox("Modelo de soprador lobular", lobular_models, index=lobular_models.index(current) if current in lobular_models else 0)
                 fd["manual_lobular_qty"] = st.number_input("Quantidade de sopradores lobulares", min_value=0, value=int(fd.get("manual_lobular_qty", 1)), step=1)
-                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%))", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_lobular")
+                fd["diffusion_efficiency_pct"] = st.number_input("Eficiência efetiva de transferência do sistema de difusão (%) — base para OTR/m", min_value=1.0, max_value=100.0, value=float(fd.get("diffusion_efficiency_pct", 12.0)), step=1.0, key="diff_lobular")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1618,14 +1811,31 @@ def _normalize_production_schedule_for_display(results: dict, form_data: dict) -
 
 fd_calc = fd.copy()
 fd_calc["fingerling_weight_kg"] = fd["fingerling_weight_kg"] / 1000.0
+# O modelo de dados ainda não tem um modo econômico específico para composição;
+# por isso, a composição preliminar calcula capex_total na interface e envia ao motor
+# como CAPEX manual, preservando o valor estimado.
+if fd_calc.get("economic_model_mode") == "Composição preliminar":
+    fd_calc["economic_model_mode"] = "Manual (CAPEX total)"
 
-inp = DashboardProjectInput(**fd_calc)
+allowed_input_fields = {field.name for field in fields(DashboardProjectInput)}
+fd_model = {key: value for key, value in fd_calc.items() if key in allowed_input_fields}
+ignored_input_fields = sorted(set(fd_calc) - allowed_input_fields)
+if ignored_input_fields:
+    st.session_state["ignored_input_fields_for_model"] = ignored_input_fields
+
+inp = DashboardProjectInput(**fd_model)
 results = calculate_dashboard_project(inp)
 st.session_state.latest_results = results
 base_res = results["base"]
 _normalize_production_schedule_for_display(results, fd)
 base_res = results["base"]
-altitude_correction_ui = _apply_altitude_correction_to_aeration_results(base_res, fd_calc)
+altitude_correction_ui = {
+    "altitude_m": fd_calc.get("site_altitude_m", 0.0),
+    "altitude_factor": base_res.get("altitude_transfer_factor"),
+    "installed_supply_original": base_res.get("installed_oxygen_supply_sea_level_kg_h"),
+    "installed_supply_corrected": base_res.get("installed_oxygen_supply_kg_h"),
+    "oxygen_offer_demand_ratio": base_res.get("oxygen_offer_demand_ratio"),
+}
 base_res = results["base"]
 alt_factor_ui = altitude_transfer_factor(fd_calc.get("site_altitude_m", 0.0))
 temp_factor_ui = surface_aeration_base_factor(fd_calc.get("water_temperature_c", 28.0))
@@ -1767,10 +1977,35 @@ with tab4:
             st.write(f"- **Potência unitária:** {num(det.get('power_kw_each'))} kW")
             st.write(f"- **Vazão unitária:** {num(det.get('airflow_m3_h_each'),0)} m³/h")
             st.write(f"- **Pressão nominal:** {num(det.get('pressure_mbar'),0)} mbar")
+            diffuser = det.get("diffuser_layout", {}) if isinstance(det, dict) else {}
+            if diffuser:
+                st.write(f"- **Difusor/mangueira sugerido:** {diffuser.get('diffuser_name', '-')}")
+                st.write(f"- **OTR preliminar usado:** {num(diffuser.get('kg_o2_per_m_h'), 3)} kg O₂/h/m ({diffuser.get('otr_reference_class', '-')})")
+                st.write(f"- **Metragem calculada por tanque:** {num(diffuser.get('meters_per_tank_required'), 1)} m")
+                st.write(f"- **Metragem operacional recomendada por tanque:** {num(diffuser.get('meters_per_tank_recommended'), 1)} m")
+                st.write(f"- **Metragem total recomendada:** {num(diffuser.get('meters_total_recommended'), 1)} m")
+                st.write(f"- **Anéis/linhas estimados por tanque:** {int(diffuser.get('estimated_rings_per_tank', 0) or 0)}")
+                if diffuser.get("is_metrage_excessive"):
+                    st.warning(diffuser.get("layout_note", "Metragem acima da faixa operacional/econômica recomendada."))
+                st.caption(diffuser.get("diffuser_note", ""))
+                st.caption(diffuser.get("density_note", ""))
         elif isinstance(det, dict) and "rows" in det and det["rows"]:
             detalhe_df = pd.DataFrame(det["rows"])
-            detalhe_df = detalhe_df.rename(columns={"tecnologia": "Tecnologia", "modelo": "Modelo", "quantidade": "Quantidade"})
-            st.dataframe(detalhe_df, use_container_width=True)
+            detalhe_df = detalhe_df.rename(columns={
+                "tecnologia": "Tecnologia",
+                "modelo": "Modelo",
+                "quantidade": "Quantidade total",
+                "quantidade_por_tanque": "Quantidade por tanque",
+                "arranjo": "Arranjo",
+                "arranjo_descricao": "Descrição do arranjo",
+                "oferta_por_tanque_kg_h": "Oferta por tanque (kg O₂/h)",
+            })
+            st.dataframe(detalhe_df, use_container_width=True, hide_index=True)
+            if str(det.get("technology", "")).startswith("Híbrido") or str(base_res.get("selected_aeration_technology", "")).startswith("Híbrido"):
+                st.info(
+                    "Configuração híbrida: o sistema combina tecnologias para separar oxigenação, circulação/vórtice, "
+                    "segurança operacional e custo energético. Validar arranjo final em campo."
+                )
         elif isinstance(det, dict):
             oferta_tanque = det.get("installed_supply_per_tank_kg_h", 0.0)
             demanda_tanque = base_res.get("oxygen_demand_per_tank_kg_h", 0.0)
@@ -1781,8 +2016,14 @@ with tab4:
             st.write(f"- **Oferta por tanque:** {num(oferta_tanque)} kg O₂/h")
             st.write(f"- **Demanda por tanque:** {num(demanda_tanque)} kg O₂/h")
             st.write(f"- **Margem de segurança estimada:** {num(margem,1)}%")
-            st.write(f"- **Máximo sugerido por tanque:** {int(det.get('max_units_per_tank', 0))}")
+            st.write(f"- **Máximo geométrico por tanque:** {int(det.get('max_units_per_tank', 0))}")
+            if det.get("arrangement"):
+                st.write(f"- **Arranjo geométrico:** {det.get('arrangement')} — {det.get('arrangement_label', '-')}")
+                st.write(f"- **Raio de instalação:** {num(det.get('install_radius_m'))} m")
+                st.write(f"- **Folga até a borda:** {num(det.get('edge_clearance_m'))} m")
             st.write(f"- **Situação:** {'Viável' if det.get('feasible', False) else 'Inadequada para este arranjo'}")
+            if det.get("technology") == "Pás" and fd.get("system_type") == "Circular revestido":
+                st.caption("Em tanque circular grande, pás podem ser usadas como apoio à circulação/vórtice; validar posicionamento em campo para concentrar sólidos sem prejudicar o dreno central.")
 
     aer_phase_rows_ui = _build_aeration_phase_table_rows(base_res, fd)
     if aer_phase_rows_ui:
@@ -2181,6 +2422,533 @@ def _markdown_table(headers: list[str], rows: list[list[object]]) -> str:
     return "\n".join(lines)
 
 
+
+def _find_diffuser_layout_any(obj):
+    """Localiza layout de mangueira/difusor em resultados simples ou híbridos."""
+    if isinstance(obj, dict):
+        if isinstance(obj.get("diffuser_layout"), dict):
+            return obj.get("diffuser_layout")
+        if isinstance(obj.get("layout_hibrido"), dict):
+            return obj.get("layout_hibrido")
+        for key in ("blower_details", "details", "aeration_details", "suggested_blower_details"):
+            found = _find_diffuser_layout_any(obj.get(key))
+            if found:
+                return found
+        rows = obj.get("rows")
+        if isinstance(rows, list):
+            for item in rows:
+                found = _find_diffuser_layout_any(item)
+                if found:
+                    return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_diffuser_layout_any(item)
+            if found:
+                return found
+    return None
+
+
+def _as_int_for_diagram(value, default: int = 0) -> int:
+    try:
+        if isinstance(value, str):
+            if value.lower() in ("sistema", "system"):
+                return default
+            value = value.replace(",", ".")
+        return max(0, int(round(float(value))))
+    except Exception:
+        return default
+
+
+def _diagram_has_soprador(rows: list[dict], selected_technology: str) -> bool:
+    """Retorna True somente quando a tecnologia efetivamente usa soprador/difusão."""
+    tech_text = str(selected_technology or "")
+    if "Soprador" in tech_text:
+        return True
+    for row in rows:
+        if "Soprador" in str(row.get("technology", "")):
+            return True
+    return False
+
+
+def _equipment_qty_per_tank_for_diagram(item: dict, number_of_units: int) -> tuple[int, int, str]:
+    """Interpreta corretamente quantidade total x quantidade por tanque para a planta.
+
+    Nas configurações automáticas/híbridas o cálculo costuma trazer quantidade_por_tanque.
+    Na configuração manual, a chave quantidade representa o TOTAL do sistema; portanto
+    deve ser dividida pelo número de tanques para desenhar um tanque representativo.
+    """
+    units = max(1, int(number_of_units or 1))
+    per_tank_raw = item.get("quantidade_por_tanque", item.get("qty_per_tank", item.get("quantity_per_tank", None)))
+    total_raw = item.get("quantidade", item.get("quantity_total", None))
+
+    if per_tank_raw not in (None, "", "sistema", "system"):
+        qpt = _as_int_for_diagram(per_tank_raw, 0)
+        total = _as_int_for_diagram(total_raw, qpt * units) if total_raw not in (None, "") else qpt * units
+        return qpt, total, "por_tanque"
+
+    total = _as_int_for_diagram(total_raw, 0)
+    if total > 0:
+        qpt = max(1, int(math.ceil(total / units)))
+        return qpt, total, "total_do_sistema"
+
+    return 0, 0, "indefinido"
+
+
+def _aeration_rows_for_diagram(aeration_details: dict, selected_technology: str, number_of_units: int) -> list[dict]:
+    """Normaliza equipamentos para o desenho esquemático do tanque."""
+    rows: list[dict] = []
+    if isinstance(aeration_details, dict) and isinstance(aeration_details.get("rows"), list):
+        for item in aeration_details.get("rows", []):
+            if not isinstance(item, dict):
+                continue
+            qpt, total, qty_origin = _equipment_qty_per_tank_for_diagram(item, number_of_units)
+            rows.append({
+                "technology": str(item.get("tecnologia", item.get("technology", "-"))),
+                "model": str(item.get("modelo", item.get("model", "-"))),
+                "qty_per_tank": qpt,
+                "quantity_total": total,
+                "qty_origin": qty_origin,
+                "arrangement": item.get("arranjo", item.get("arrangement", "-")),
+                "arrangement_label": item.get("arranjo_descricao", item.get("arrangement_label", "-")),
+                "layout_hibrido": item.get("layout_hibrido"),
+                "launch_diameter_m": item.get("launch_diameter_m"),
+            })
+    elif isinstance(aeration_details, dict):
+        qpt, total, qty_origin = _equipment_qty_per_tank_for_diagram(aeration_details, number_of_units)
+        rows.append({
+            "technology": selected_technology,
+            "model": str(aeration_details.get("model", aeration_details.get("modelo", "-"))),
+            "qty_per_tank": qpt,
+            "quantity_total": total,
+            "qty_origin": qty_origin,
+            "arrangement": aeration_details.get("arrangement", aeration_details.get("arranjo", "-")),
+            "arrangement_label": aeration_details.get("arrangement_label", aeration_details.get("arranjo_descricao", "-")),
+            "launch_diameter_m": aeration_details.get("launch_diameter_m"),
+        })
+    return rows
+
+
+def _paddle_draw_quantity(qty_per_tank: int, model: str = "") -> tuple[int, str]:
+    """Quantidade de pás a representar na planta técnica.
+
+    Regra adotada:
+    - se o cálculo/inserção indicar 1 pá por tanque, a planta desenha 1 pá;
+    - 2 pás opostas entram como alternativa técnica recomendável apenas quando for
+      possível substituir 1 modelo mais potente por 2 modelos menores para melhorar
+      circulação/vórtice;
+    - não força 2 pás quando 1 equipamento menor já atende à demanda.
+    """
+    qty = max(0, int(qty_per_tank or 0))
+    if qty == 1:
+        return 1, (
+            "Observação: 1 pá por tanque foi mantida na planta porque pode ser suficiente "
+            "quando o menor modelo disponível atende à demanda. Quando houver substituição "
+            "de 1 equipamento mais potente por 2 menores, recomenda-se avaliar 2 pás "
+            "opostas para melhorar vórtice/circulação."
+        )
+    return qty, ""
+
+
+def _paddle_angles_and_radius_factor(qty: int) -> tuple[list[float], float]:
+    """Padrões da planilha Beraqua/AquaPá: anel externo, fluxo tangencial."""
+    qty = max(1, int(qty or 1))
+    patterns = {
+        1: ([0], 0.65),
+        2: ([0, 180], 0.72),
+        3: ([0, 120, 240], 0.72),
+        4: ([45, 135, 225, 315], 0.72),
+        5: ([18, 90, 162, 234, 306], 0.76),
+        6: ([0, 60, 120, 180, 240, 300], 0.76),
+        7: ([0, 51.4, 102.9, 154.3, 205.7, 257.1, 308.6], 0.76),
+        8: ([22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5], 0.76),
+        9: ([0, 40, 80, 120, 160, 200, 240, 280, 320], 0.80),
+        10: ([18, 54, 90, 126, 162, 198, 234, 270, 306, 342], 0.80),
+        11: ([0, 32.7, 65.5, 98.2, 130.9, 163.6, 196.4, 229.1, 261.8, 294.5, 327.3], 0.80),
+        12: ([15, 45, 75, 105, 135, 165, 195, 225, 255, 285, 315, 345], 0.80),
+    }
+    if qty in patterns:
+        return patterns[qty]
+    angles = [360.0 * i / qty for i in range(qty)]
+    return angles, 0.80
+
+
+def _surface_positions(qty: int, radius: float, arrangement: str = "", technology: str = "") -> list[tuple[float, float, float]]:
+    """Posições técnicas normalizadas: x, y, ângulo em radianos."""
+    qty = max(0, int(qty or 0))
+    if qty <= 0:
+        return []
+    arr = str(arrangement or "").upper()
+    tech = str(technology or "")
+
+    if "Pás" in tech or "Pas" in tech or "Pa" in tech:
+        draw_qty, _ = _paddle_draw_quantity(qty)
+        angles_deg, factor = _paddle_angles_and_radius_factor(draw_qty)
+        rr = radius * factor
+        # Orientação tangencial para criar corrente circular no mesmo sentido.
+        return [(rr * math.cos(math.radians(a)), rr * math.sin(math.radians(a)), math.radians(a + 90.0)) for a in angles_deg]
+
+    if qty == 1:
+        return [(0.0, 0.0, 0.0)]
+
+    if "Chafariz" in tech:
+        r = radius * 0.62
+        if qty == 2 or arr == "A2":
+            return [(-r, 0.0, 0.0), (r, 0.0, math.pi)]
+        if qty == 3 or arr == "A3":
+            return [(r * math.cos(a), r * math.sin(a), a) for a in (math.pi / 2, math.pi / 2 + 2 * math.pi / 3, math.pi / 2 + 4 * math.pi / 3)]
+        n = min(qty, 12)
+        return [(r * math.cos(2 * math.pi * i / n + math.pi / 4), r * math.sin(2 * math.pi * i / n + math.pi / 4), 2 * math.pi * i / n + math.pi / 4) for i in range(n)]
+
+    n = min(qty, 12)
+    r = radius * 0.60
+    return [(r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n), 2 * math.pi * i / n) for i in range(n)]
+
+
+
+def _ring_geometry_for_diagram(radius: float, rings: int, target_meters: float | None = None) -> tuple[list[dict], float, int]:
+    """Calcula anéis de mangueira/difusor para planta técnica com melhor distribuição radial.
+
+    Regra técnica adotada:
+    - a linha externa começa próxima à borda, respeitando afastamento operacional;
+    - as demais linhas avançam de forma distribuída até uma zona interna de segurança;
+    - a quantidade de anéis é ajustada para representar a metragem recomendada sem
+      concentrar todos os anéis apenas junto à parede do tanque;
+    - se a metragem recomendada for maior que a geometria comporta, a planta indica
+      ramais paralelos por anel.
+    """
+    try:
+        target = float(target_meters) if target_meters is not None else 0.0
+    except Exception:
+        target = 0.0
+
+    rings_hint = max(0, int(rings or 0))
+
+    # Afastamento operacional: deixa a mangueira próxima à parede, mas não encostada.
+    border_clearance = max(0.50, min(0.90, radius * 0.055))
+    outer_radius = max(0.80, radius - border_clearance)
+
+    # Zona livre interna para dreno/manutenção e para evitar difusores sobre o dreno.
+    inner_clearance = max(0.90, min(2.10, radius * 0.18))
+    if inner_clearance >= outer_radius:
+        inner_clearance = max(0.35, outer_radius * 0.30)
+
+    # Espaçamento mínimo para manter a planta legível e operacionalmente executável.
+    min_spacing = max(0.35, min(0.85, radius * 0.035))
+
+    def build_rows_from_radii(radii: list[float]) -> tuple[list[dict], float]:
+        rows: list[dict] = []
+        total = 0.0
+        for idx, rr in enumerate(radii, start=1):
+            diameter = 2.0 * rr
+            length = 2.0 * math.pi * rr
+            total += length
+            spacing = abs(radii[idx - 2] - rr) if idx > 1 else 0.0
+            rows.append({
+                "idx": idx,
+                "radius_m": rr,
+                "diameter_m": diameter,
+                "length_m": length,
+                "spacing_m": spacing,
+                "border_clearance_m": radius - outer_radius,
+                "inner_clearance_m": inner_clearance,
+            })
+        return rows, total
+
+    if target > 0:
+        best_rows = None
+        best_total = 0.0
+        best_score = None
+        max_n = 24
+
+        # Primeiro: tentar distribuir do anel externo até uma zona interna de segurança.
+        # Isso evita o desenho concentrado na borda.
+        for n in range(1, max_n + 1):
+            if n == 1:
+                radii = [outer_radius]
+            else:
+                spacing = (outer_radius - inner_clearance) / (n - 1)
+                if spacing < min_spacing:
+                    continue
+                radii = [outer_radius - spacing * i for i in range(n)]
+            rows, total = build_rows_from_radii(radii)
+            relative_error = abs(total - target) / max(target, 1.0)
+            hint_penalty = 0.055 * abs(n - rings_hint) if rings_hint > 0 else 0.0
+            deficit_penalty = 0.10 if total < target * 0.92 else 0.0
+            excess_penalty = 0.04 if total > target * 1.18 else 0.0
+            # Preferir desenho que usa a largura útil do tanque e não fica só na borda.
+            radial_span = outer_radius - radii[-1]
+            span_ratio = radial_span / max(outer_radius - inner_clearance, 0.01)
+            span_penalty = max(0.0, 0.95 - span_ratio) * 0.20
+            score = (relative_error + hint_penalty + deficit_penalty + excess_penalty + span_penalty, n)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_rows = rows
+                best_total = total
+
+        if best_rows is not None:
+            # Se a diferença residual for muito grande, informar ramais paralelos por anel.
+            multiplier = 1
+            if best_total < target * 0.72:
+                multiplier = max(1, int(math.ceil(target / max(best_total, 1.0))))
+                best_total = best_total * multiplier
+            return best_rows, best_total, multiplier
+
+    # Fallback sem metragem recomendada: usar a dica de anéis, mas distribuindo no raio útil.
+    rings_final = max(0, rings_hint)
+    if rings_final <= 0:
+        return [], 0.0, 1
+    rings_final = min(rings_final, 18)
+    if rings_final == 1:
+        radii = [outer_radius]
+    else:
+        spacing = (outer_radius - inner_clearance) / (rings_final - 1)
+        if spacing < min_spacing:
+            rings_final = max(1, int((outer_radius - inner_clearance) / min_spacing) + 1)
+            rings_final = min(rings_final, 18)
+            spacing = (outer_radius - inner_clearance) / max(rings_final - 1, 1)
+        radii = [outer_radius - spacing * i for i in range(rings_final)]
+    rows, total_geom = build_rows_from_radii(radii)
+    return rows, total_geom, 1
+
+def _row_allowed_for_diagram(item: dict, selected_technology: str, form_data: dict) -> bool:
+    """Evita que equipamentos residuais de outras escolhas apareçam na planta."""
+    tech = str(item.get("technology", ""))
+    selected = str(selected_technology or "")
+    aeration_mode = str(form_data.get("aeration_mode", form_data.get("aeration_mode_label", "")))
+    manual_mode = selected.lower().startswith("configuração manual") or selected.lower().startswith("configuracao manual") or aeration_mode == "Manual"
+
+    if manual_mode:
+        if "Chafariz" in tech:
+            return bool(form_data.get("manual_use_fountain", False)) and _as_int_for_diagram(form_data.get("manual_fountain_qty"), 0) > 0
+        if "Pás" in tech or "Pas" in tech:
+            return bool(form_data.get("manual_use_paddlewheel", False)) and _as_int_for_diagram(form_data.get("manual_paddle_qty"), 0) > 0
+        if "Soprador" in tech:
+            radial_on = bool(form_data.get("manual_use_radial", False)) and _as_int_for_diagram(form_data.get("manual_radial_qty"), 0) > 0
+            lobular_on = bool(form_data.get("manual_use_lobular", False)) and _as_int_for_diagram(form_data.get("manual_lobular_qty"), 0) > 0
+            return radial_on or lobular_on
+        return False
+
+    if selected == "Chafariz":
+        return "Chafariz" in tech
+    if selected == "Pás":
+        return "Pás" in tech or "Pas" in tech
+    if selected == "Soprador":
+        return "Soprador" in tech
+    if selected.startswith("Híbrido") or selected.startswith("Hibrido"):
+        if "Chafariz" in tech and "Chafariz" in selected:
+            return True
+        if ("Pás" in tech or "Pas" in tech) and ("Pás" in selected or "Pas" in selected):
+            return True
+        if "Soprador" in tech and "Soprador" in selected:
+            return True
+        return False
+    return True
+
+
+def _create_aeration_layout_diagram(results_data: dict, form_data: dict, output_dir: Path) -> tuple[Path | None, str]:
+    """Gera planta técnica do tanque com aeração conforme a configuração calculada."""
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle, Rectangle, FancyArrowPatch, Arc
+        from matplotlib.lines import Line2D
+    except Exception:
+        return None, "Matplotlib não disponível para gerar o esquema de aeração."
+
+    try:
+        base = results_data.get("base", {}) if isinstance(results_data, dict) else {}
+        geometry = base.get("geometry", {}) if isinstance(base, dict) else {}
+        details = base.get("aeration_details", {}) if isinstance(base, dict) else {}
+        technology = str(base.get("selected_aeration_technology", "-") or "-")
+        unit_volume = _as_float(geometry.get("unit_volume_m3"), _as_float(form_data.get("unit_volume_m3"), 0.0)) or 0.0
+        depth = _as_float(geometry.get("depth_m"), _as_float(form_data.get("water_depth_m"), 1.2)) or 1.2
+        diameter = _as_float(geometry.get("diameter_m"), 0.0) or 0.0
+        if diameter <= 0:
+            area = _as_float(geometry.get("surface_area_m2"), 0.0) or 0.0
+            diameter = math.sqrt((4.0 * area) / math.pi) if area > 0 else 10.0
+        radius = max(diameter / 2.0, 1.0)
+        surface_area = math.pi * radius * radius
+
+        number_of_units = _as_int_for_diagram(base.get("number_of_units", form_data.get("number_of_units", 1)), 1)
+        rows_raw = _aeration_rows_for_diagram(details, technology, number_of_units)
+        rows = [r for r in rows_raw if _row_allowed_for_diagram(r, technology, form_data)]
+        has_soprador = _diagram_has_soprador(rows, technology)
+        diffuser_layout = None
+        if has_soprador:
+            diffuser_layout = _find_diffuser_layout_any(details) or _find_diffuser_layout_any(base.get("suggested_blower_details", {}))
+
+        color_tank = "#0B1F2A"
+        color_diffuser = "#7B2CBF"   # roxo
+        color_fountain = "#0077B6"   # azul
+        color_paddle = "#2E7D32"     # verde
+        color_drain = "#B00020"      # vermelho
+        color_dim = "#555555"
+        color_flow = "#666666"
+
+        fig = plt.figure(figsize=(14.6, 8.2), dpi=180)
+        gs = fig.add_gridspec(1, 2, width_ratios=[2.10, 1.30], wspace=0.08)
+        ax = fig.add_subplot(gs[0, 0])
+        ax_info = fig.add_subplot(gs[0, 1])
+        ax.set_aspect("equal")
+        ax.axis("off")
+        ax_info.axis("off")
+
+        ax.add_patch(Circle((0, 0), radius, fill=False, linewidth=2.4, edgecolor=color_tank))
+
+        for arc_r in (radius * 0.32, radius * 0.52, radius * 0.72):
+            ax.add_patch(Arc((0, 0), 2 * arc_r, 2 * arc_r, theta1=25, theta2=110, linewidth=0.75, color=color_flow, alpha=0.35))
+            a = math.radians(110)
+            ax.add_patch(FancyArrowPatch((arc_r * math.cos(a - 0.05), arc_r * math.sin(a - 0.05)), (arc_r * math.cos(a), arc_r * math.sin(a)), arrowstyle="->", mutation_scale=7, linewidth=0.75, color=color_flow, alpha=0.45))
+
+        y_dim = -radius * 1.12
+        ax.plot([-radius, radius], [y_dim, y_dim], color=color_dim, linewidth=0.9)
+        ax.plot([-radius, -radius], [y_dim - radius * 0.025, y_dim + radius * 0.025], color=color_dim, linewidth=0.9)
+        ax.plot([radius, radius], [y_dim - radius * 0.025, y_dim + radius * 0.025], color=color_dim, linewidth=0.9)
+        ax.text(0, y_dim - radius * 0.065, f"Diâmetro interno estimado: {diameter:.2f} m".replace(".", ","), ha="center", va="top", fontsize=8.4, color=color_dim)
+
+        technical_lines = [
+            "DADOS DO TANQUE",
+            f"Volume útil: {unit_volume:,.0f} m³".replace(",", "."),
+            f"Diâmetro: {diameter:.2f} m".replace(".", ","),
+            f"Área superficial: {surface_area:.2f} m²".replace(".", ","),
+            f"Lâmina d'água: {depth:.2f} m".replace(".", ","),
+            f"Tecnologia: {technology}",
+        ]
+
+        ring_rows: list[dict] = []
+        total_geom = 0.0
+        multiplier = 1
+        if isinstance(diffuser_layout, dict):
+            rings = _as_int_for_diagram(diffuser_layout.get("estimated_rings_per_tank"), 0)
+            meters = _as_float(diffuser_layout.get("meters_per_tank_recommended"), None)
+            if rings <= 0 and meters:
+                rings = max(1, min(18, int(round(meters / max(1.0, math.pi * radius)))))
+            ring_rows, total_geom, multiplier = _ring_geometry_for_diagram(radius, rings, meters)
+            for item in ring_rows:
+                rr = item["radius_m"]
+                ax.add_patch(Circle((0, 0), rr, fill=False, linestyle="--", linewidth=1.25, edgecolor=color_diffuser, alpha=0.92))
+                label_angle = math.radians(18 if item["idx"] % 2 else 202)
+                lx = rr * math.cos(label_angle)
+                ly = rr * math.sin(label_angle)
+                ax.text(lx, ly, f"A{item['idx']}\n{item['length_m']:.1f} m".replace(".", ","), fontsize=6.2, ha="center", va="center", color=color_diffuser, bbox=dict(boxstyle="round,pad=0.12", facecolor="white", alpha=0.78, edgecolor="none"))
+            if ring_rows:
+                spacing = ring_rows[1]["spacing_m"] if len(ring_rows) > 1 else 0.0
+                border_distance = ring_rows[0].get("border_clearance_m", radius - ring_rows[0]["radius_m"])
+                technical_lines.extend([
+                    "",
+                    "MANGUEIRA POROSA / DIFUSOR",
+                    f"Anéis: {len(ring_rows)} — disposição de fora para dentro",
+                    f"Distância do anel externo à borda: {border_distance:.2f} m".replace(".", ","),
+                    f"Espaçamento radial entre anéis: {spacing:.2f} m".replace(".", ","),
+                    f"Anel interno até o centro/dreno: {ring_rows[-1].get('inner_clearance_m', ring_rows[-1]['radius_m']):.2f} m".replace(".", ","),
+                    f"Metragem representada: {total_geom:.1f} m/tanque".replace(".", ","),
+                ])
+                if meters is not None:
+                    technical_lines.append(f"Metragem recomendada pelo cálculo: {meters:.1f} m/tanque".replace(".", ","))
+                if multiplier > 1:
+                    technical_lines.append(f"Observação: usar ~{multiplier} ramais paralelos por anel para atingir a metragem total.")
+
+        for item in rows:
+            tech = str(item.get("technology", ""))
+            qpt = _as_int_for_diagram(item.get("qty_per_tank"), 0)
+            arrangement = str(item.get("arrangement", ""))
+            model = str(item.get("model", "-"))
+            if qpt <= 0:
+                continue
+            if "Chafariz" in tech:
+                positions = _surface_positions(qpt, radius, arrangement, tech)
+                for idx, (x, y, ang) in enumerate(positions, start=1):
+                    launch_d = _as_float(item.get("launch_diameter_m"), 0.0) or radius * 0.28
+                    spot_r = max(min(launch_d / 2.0, radius * 0.20), radius * 0.07)
+                    ax.add_patch(Circle((x, y), spot_r, fill=False, linestyle=":", linewidth=1.15, edgecolor=color_fountain, alpha=0.86))
+                    ax.add_patch(Circle((x, y), radius * 0.043, fill=True, facecolor=color_fountain, edgecolor="white", linewidth=0.9, alpha=0.96))
+                    ax.text(x, y + spot_r + radius * 0.035, f"C{idx}", ha="center", va="bottom", fontsize=8, color=color_fountain, fontweight="bold")
+                technical_lines.extend(["", f"CHAFARIZ — modelo {model}", f"Quantidade por tanque: {qpt}", f"Arranjo: {item.get('arrangement_label', arrangement)}"])
+                if item.get("qty_origin") == "total_do_sistema":
+                    technical_lines.append(f"Observação: quantidade original informada: {item.get('quantity_total', 0)} equipamento(s) no sistema.")
+            elif "Pás" in tech or "Pas" in tech or "Pa" in tech:
+                draw_qpt, paddle_note = _paddle_draw_quantity(qpt, model)
+                positions = _surface_positions(draw_qpt, radius, arrangement, tech)
+                for idx, (x, y, ang) in enumerate(positions, start=1):
+                    w = radius * 0.18
+                    h = radius * 0.065
+                    rect = Rectangle((x - w / 2, y - h / 2), w, h, angle=math.degrees(ang), fill=True, facecolor=color_paddle, edgecolor="white", linewidth=0.85, alpha=0.90)
+                    ax.add_patch(rect)
+                    ax.add_patch(FancyArrowPatch((x, y), (x + radius * 0.16 * math.cos(ang), y + radius * 0.16 * math.sin(ang)), arrowstyle="->", mutation_scale=10, linewidth=1.05, color=color_paddle, alpha=0.95))
+                    ax.text(x, y + radius * 0.115, f"P{idx}", ha="center", va="bottom", fontsize=8, color=color_paddle, fontweight="bold")
+                _, factor = _paddle_angles_and_radius_factor(draw_qpt)
+                technical_lines.extend([
+                    "",
+                    f"AERADOR DE PÁS — modelo {model}",
+                    f"Quantidade por tanque representada: {draw_qpt}",
+                    f"Raio de instalação: {factor*100:.0f}% do raio útil".replace(".", ","),
+                    "Orientação: fluxo tangencial, todos no mesmo sentido",
+                ])
+                if paddle_note:
+                    technical_lines.append(paddle_note)
+                if item.get("qty_origin") == "total_do_sistema":
+                    technical_lines.append(f"Observação: quantidade original informada: {item.get('quantity_total', 0)} equipamento(s) no sistema.")
+            elif "Soprador" in tech:
+                technical_lines.extend(["", f"SOPRADOR — modelo {model}", "Distribuição por mangueira/difusor no fundo do tanque"])
+
+        # Dreno central em vermelho, menor que o marcador do chafariz e desenhado por cima.
+        ax.add_patch(Circle((0, 0), radius * 0.024, fill=True, facecolor=color_drain, edgecolor="white", linewidth=1.1, alpha=0.99, zorder=12))
+        ax.text(0, -radius * 0.070, "Dreno central", ha="center", va="top", fontsize=8.4, color=color_drain, fontweight="bold", zorder=13)
+
+        ax.set_xlim(-radius * 1.18, radius * 1.18)
+        ax.set_ylim(-radius * 1.22, radius * 1.18)
+        ax.set_title("Planta técnica preliminar — arranjo de oxigenação/aeração por tanque", fontsize=12.5, fontweight="bold", pad=12)
+
+        legend_handles = [
+            Line2D([0], [0], color=color_tank, lw=2.2, label="Borda do tanque"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=color_drain, markersize=6, label="Dreno central"),
+        ]
+        if ring_rows:
+            legend_handles.append(Line2D([0], [0], color=color_diffuser, lw=1.3, linestyle="--", label="Anéis de mangueira/difusor"))
+        if any("Chafariz" in str(r.get("technology", "")) for r in rows):
+            legend_handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor=color_fountain, markersize=8, label="Chafariz"))
+        if any(("Pás" in str(r.get("technology", "")) or "Pas" in str(r.get("technology", ""))) for r in rows):
+            legend_handles.append(Line2D([0], [0], marker="s", color="w", markerfacecolor=color_paddle, markersize=8, label="Aerador de pás"))
+
+        ax_info.legend(handles=legend_handles, loc="upper left", bbox_to_anchor=(0.02, 0.98), fontsize=8.2, frameon=True, framealpha=0.90)
+        ax_info.text(
+            0.02,
+            0.78,
+            "\n".join(technical_lines),
+            ha="left",
+            va="top",
+            fontsize=6.8,
+            linespacing=0.96,
+            color="#102A43",
+            bbox=dict(boxstyle="round,pad=0.42", facecolor="white", alpha=0.90, edgecolor="#8FA6B3"),
+            transform=ax_info.transAxes,
+        )
+
+        if ring_rows:
+            table_rows = [[f"A{r['idx']}", f"{r['diameter_m']:.2f}".replace(".", ","), f"{r['length_m']:.1f}".replace(".", ",")] for r in ring_rows[:20]]
+            table = ax_info.table(
+                cellText=table_rows,
+                colLabels=["Anel", "Diâm. (m)", "Comp. (m)"],
+                cellLoc="center",
+                colLoc="center",
+                bbox=[0.02, 0.02, 0.96, 0.30],
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(6.5)
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                cell.set_linewidth(0.45)
+                if row_idx == 0:
+                    cell.set_text_props(weight="bold")
+
+        safe_project = _slugify_filename(form_data.get("project_name") or "projeto")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_path = output_dir / f"{safe_project}_planta_tecnica_aeracao.png"
+        fig.savefig(image_path, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        caption = "Planta técnica preliminar gerada a partir do volume, diâmetro estimado, lâmina d'água e tecnologia selecionada na aba Oxigênio e aeração. Os anéis de mangueira/difusor são representados de fora para dentro, com afastamento da borda e espaçamento radial indicados. A metragem deve ser validada com pressão real do soprador, perda de carga, ficha técnica da mangueira/difusor, hidráulica do tanque, lançamento d'água e segurança elétrica."
+        return image_path, caption
+    except Exception as exc:
+        return None, f"Não foi possível gerar a planta técnica de aeração: {exc}"
+
 def _build_structured_professional_report(results_data: dict, profile: str, form_data: dict) -> str:
     """
     Relatório técnico estruturado e estável.
@@ -2192,6 +2960,34 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
     geometry = base.get("geometry", {}) if isinstance(base, dict) else {}
     feeding_plan = base.get("feeding_plan", []) if isinstance(base, dict) else []
     aer_rows = base.get("aeration_phase_operation", []) if isinstance(base, dict) else []
+
+    def _find_diffuser_layout(obj):
+        """Localiza informações de mangueira/difusor em diferentes formatos do cálculo."""
+        if isinstance(obj, dict):
+            if isinstance(obj.get("diffuser_layout"), dict):
+                return obj.get("diffuser_layout")
+            if isinstance(obj.get("layout_hibrido"), dict):
+                return obj.get("layout_hibrido")
+            for key in ("blower_details", "details", "aeration_details"):
+                found = _find_diffuser_layout(obj.get(key))
+                if found:
+                    return found
+            rows = obj.get("rows")
+            if isinstance(rows, list):
+                for item in rows:
+                    found = _find_diffuser_layout(item)
+                    if found:
+                        return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = _find_diffuser_layout(item)
+                if found:
+                    return found
+        return None
+
+    diffuser_layout = _find_diffuser_layout(base.get("aeration_details", {}))
+    if not diffuser_layout:
+        diffuser_layout = _find_diffuser_layout(base.get("suggested_blower_details", {}))
 
     installed_supply = _as_float(base.get("installed_oxygen_supply_kg_h"), 0.0) or 0.0
     oxygen_demand_total = _as_float(base.get("oxygen_demand_kg_h"), 0.0) or 0.0
@@ -2244,8 +3040,15 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         ["Lotes em paralelo", _safe_number(schedule.get("batches_in_parallel"), 0)],
         ["Tanques por lote", _safe_number(schedule.get("units_per_batch_exact"), 2)],
         ["Produção por despesca em regime", f"{_safe_number(schedule.get('production_per_harvest_kg'), 2)} kg"],
+        ["Despescas no 1º ano (com rampa)", _safe_number(schedule.get("harvests_year1"), 0)],
         ["Produção no 1º ano com rampa", f"{_safe_number(schedule.get('production_year1_kg'), 2)} kg"],
         ["Receita no 1º ano com rampa", _safe_money(schedule.get("revenue_year1"))],
+        ["Despescas anuais em regime estabilizado", _safe_number(schedule.get("harvests_year2_stable", schedule.get("harvests_per_year")), 2)],
+        ["Produção anual em regime estabilizado", f"{_safe_number(schedule.get('production_year2_kg', base.get('production_per_year_kg')), 2)} kg"],
+        ["Receita anual em regime estabilizado", _safe_money(schedule.get("revenue_year2", base.get("revenue_year")))],
+        ["Produção média mensal em regime", f"{_safe_number(schedule.get('monthly_production_stable_kg'), 2)} kg/mês"],
+        ["Receita média mensal em regime", _safe_money(schedule.get("monthly_revenue_stable"))],
+        ["Alevinos estocados por lote/despesca", _safe_number(schedule.get("fish_stocked_per_harvest_batch"), 0)],
     ]
 
     dimension_rows = [
@@ -2254,6 +3057,8 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         ["Área superficial por tanque", f"{_safe_number(geometry.get('surface_area_m2'), 2)} m²"],
         ["Densidade final", f"{_safe_number(form_data.get('density_kg_m3'), 2)} kg/m³"],
         ["Sobrevivência estimada", _safe_number(form_data.get("survival_rate"), 2)],
+        ["Alevinos estocados no sistema", _safe_number(base.get("fish_stocked"), 0)],
+        ["Alevinos estocados por tanque", _safe_number(base.get("fish_stocked_per_tank"), 0)],
         ["Peixes colhidos por tanque", _safe_number(base.get("fish_harvested_per_tank"), 0)],
         ["Biomassa final por tanque", f"{_safe_number(base.get('final_biomass_per_tank_kg'), 2)} kg"],
     ]
@@ -2277,6 +3082,18 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         ["Relação oferta/demanda na fase crítica", f"{_safe_number(offer_demand_ratio, 2)}x"],
         ["Compatibilidade geométrica / operacional", compatibility_text],
     ]
+
+    if isinstance(diffuser_layout, dict):
+        aeration_summary_rows.extend([
+            ["Difusor/mangueira estimado", _safe_text(diffuser_layout.get("diffuser_name"), "-")],
+            ["Classe OTR usada para difusão", _safe_text(diffuser_layout.get("otr_reference_class"), "-")],
+            ["OTR preliminar usado", f"{_safe_number(diffuser_layout.get('kg_o2_per_m_h'), 3)} kg O₂/h/m"],
+            ["Metragem calculada por tanque", f"{_safe_number(diffuser_layout.get('meters_per_tank_required'), 1)} m"],
+            ["Metragem recomendada por tanque", f"{_safe_number(diffuser_layout.get('meters_per_tank_recommended'), 1)} m"],
+            ["Metragem total recomendada", f"{_safe_number(diffuser_layout.get('meters_total_recommended'), 1)} m"],
+            ["Linhas/anéis estimados por tanque", _safe_number(diffuser_layout.get("estimated_rings_per_tank"), 0)],
+            ["Observação da difusão", _safe_text(diffuser_layout.get("density_note", diffuser_layout.get("layout_note")), "-")],
+        ])
 
     aeration_phase_dict_rows = _build_aeration_phase_table_rows(base, form_data)
     aeration_phase_rows = [
@@ -2317,12 +3134,21 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         feeding_rows.append(["-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
 
     cost_rows = [
-        ["Receita por ciclo", _safe_money(base.get("revenue_cycle"))],
+        ["Receita por ciclo biológico completo", _safe_money(base.get("revenue_cycle"))],
         ["Custo de alevinos por ciclo", _safe_money(base.get("fingerling_cost_cycle"))],
         ["Custo de ração por ciclo", _safe_money(base.get("feed_cost_cycle"))],
         ["Custo de aeração por ciclo", _safe_money(base.get("aeration_energy_cost_cycle"))],
         ["OPEX por ciclo", _safe_money(base.get("opex_cycle"))],
         ["Margem bruta por ciclo", _safe_money(base.get("gross_margin_cycle"))],
+        ["Receita no 1º ano com rampa", _safe_money(schedule.get("revenue_year1"))],
+        ["Produção no 1º ano com rampa", f"{_safe_number(schedule.get('production_year1_kg'), 2)} kg"],
+        ["Receita anual em regime estabilizado", _safe_money(schedule.get("revenue_year2", base.get("revenue_year")))],
+        ["OPEX anual em regime estabilizado", _safe_money(base.get("opex_year"))],
+        ["Margem bruta anual em regime estabilizado", _safe_money(base.get("gross_margin_year"))],
+        ["Receita média mensal em regime", _safe_money(schedule.get("monthly_revenue_stable"))],
+        ["Produção média mensal em regime", f"{_safe_number(schedule.get('monthly_production_stable_kg'), 2)} kg/mês"],
+        ["OPEX médio mensal em regime", _safe_money((_as_float(base.get("opex_year"), 0.0) or 0.0) / 12.0)],
+        ["Margem bruta média mensal em regime", _safe_money((_as_float(base.get("gross_margin_year"), 0.0) or 0.0) / 12.0)],
         ["FCR do plano", _safe_number(base.get("implied_fcr"), 2)],
     ]
 
@@ -2351,7 +3177,13 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         "",
         _markdown_table(["Indicador", "Valor"], aeration_summary_rows),
         "",
-        "### 5.1 Operação da aeração por fase",
+        "### 5.1 Arranjo esquemático da aeração por tanque",
+        "",
+        "[[AERATION_LAYOUT_IMAGE]]",
+        "",
+        "O esquema é ilustrativo e acompanha a tecnologia selecionada na aba Oxigênio e aeração. A validação final deve considerar fixação, lançamento de água, circulação, vórtice, drenagem central, segurança elétrica e acesso para manutenção.",
+        "",
+        "### 5.2 Operação da aeração por fase",
         "",
         _markdown_table(
             ["Fase", "Biomassa média (kg)", "Demanda O₂ (kg/h)", "Modulação sugerida", "Equipamentos operando", "Potência média ativa (kW)", "Dias", "Custo da fase"],
@@ -2371,7 +3203,7 @@ def _build_structured_professional_report(results_data: dict, profile: str, form
         "",
         "## 8. Interpretação técnica",
         "",
-        "O resultado deve ser interpretado como simulação técnico-econômica. A validação final depende de biometria real, qualidade de água, desempenho alimentar, manejo sanitário, disponibilidade energética e padronização dos lotes.",
+        "O resultado deve ser interpretado como simulação técnico-econômica. No sistema escalonado, o 1º ano inclui a rampa até a primeira despesca; os indicadores mensais representam o regime estabilizado após a entrada regular das receitas. A validação final depende de biometria real, qualidade de água, desempenho alimentar, manejo sanitário, disponibilidade energética e padronização dos lotes.",
         "",
         "## 9. Recomendações",
         "",
@@ -2422,7 +3254,7 @@ def _split_markdown_table_row(line: str) -> list[str]:
 
 
 def _add_docx_table(document, table_lines: list[str]) -> None:
-    from docx.shared import Pt
+    from docx.shared import Pt, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     parsed_rows = [_split_markdown_table_row(line) for line in table_lines if line.strip().startswith("|")]
@@ -2457,7 +3289,7 @@ def _add_docx_table(document, table_lines: list[str]) -> None:
     document.add_paragraph("")
 
 
-def _markdown_to_docx_bytes(markdown_text: str, title: str, author: str) -> bytes:
+def _markdown_to_docx_bytes(markdown_text: str, title: str, author: str, aeration_diagram_path: Path | None = None, aeration_diagram_caption: str = "") -> bytes:
     """Gera DOCX em memória, convertendo tabelas Markdown em tabelas reais do Word."""
     from io import BytesIO
     from docx import Document
@@ -2489,6 +3321,22 @@ def _markdown_to_docx_bytes(markdown_text: str, title: str, author: str) -> byte
         stripped = raw_line.strip()
 
         if not stripped:
+            idx += 1
+            continue
+
+        if stripped == "[[AERATION_LAYOUT_IMAGE]]":
+            if aeration_diagram_path and Path(aeration_diagram_path).exists():
+                try:
+                    document.add_picture(str(aeration_diagram_path), width=Inches(5.8))
+                    if aeration_diagram_caption:
+                        cap = document.add_paragraph(_clean_markdown_inline(aeration_diagram_caption))
+                        for run in cap.runs:
+                            run.italic = True
+                            run.font.size = Pt(8)
+                except Exception as exc:
+                    document.add_paragraph(f"Esquema de aeração não inserido no DOCX: {exc}")
+            else:
+                document.add_paragraph("Esquema de aeração não disponível para esta simulação.")
             idx += 1
             continue
 
@@ -2524,6 +3372,12 @@ with tab6:
     st.subheader("Relatório Profissional")
     st.caption("Estruturado para produtor, técnico ou banco/financiamento.")
 
+    project_root = Path(__file__).resolve().parent
+    save_dir = project_root / output_dir
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    aeration_diagram_path, aeration_diagram_caption = _create_aeration_layout_diagram(results, fd, save_dir)
+
     professional_report = _build_structured_professional_report(
         results,
         report_profile,
@@ -2531,15 +3385,19 @@ with tab6:
     )
 
     st.markdown("### Pré-visualização do relatório")
-    st.markdown(professional_report)
-
-    project_root = Path(__file__).resolve().parent
-    save_dir = project_root / output_dir
-    save_dir.mkdir(parents=True, exist_ok=True)
+    preview_report = professional_report.replace(
+        "[[AERATION_LAYOUT_IMAGE]]",
+        "_Esquema de aeração inserido no DOCX; prévia exibida abaixo._",
+    )
+    st.markdown(preview_report)
+    if aeration_diagram_path and Path(aeration_diagram_path).exists():
+        st.image(str(aeration_diagram_path), caption=aeration_diagram_caption, use_container_width=True)
+    elif aeration_diagram_caption:
+        st.warning(aeration_diagram_caption)
 
     st.info(f"Pasta de saída atual: {save_dir}")
 
-    safe_output_name = str(output_name).strip() or "projeto_tilapia_dashboard"
+    safe_output_name = _slugify_filename(fd.get("project_name") or output_name)
     md_path = save_dir / f"{safe_output_name}_completo.md"
     docx_path = save_dir / f"{safe_output_name}_completo.docx"
 
@@ -2558,6 +3416,8 @@ with tab6:
             professional_report,
             fd.get("project_name", inp.project_name),
             fd.get("author_name", inp.author_name),
+            aeration_diagram_path,
+            aeration_diagram_caption,
         )
         docx_path.write_bytes(docx_bytes)
     except Exception as exc:

@@ -126,6 +126,57 @@ LOBULAR_BLOWER_LIBRARY = [
     {"model": "Família SRT", "power_kw": 3.00, "airflow_m3_h": 1200.0, "pressure_mbar": 350.0},
 ]
 
+DIFFUSER_LIBRARY = [
+    {
+        "name": "Mangueira porosa nano tube BERAQUA",
+        "category": "mangueira_porosa_microbolhas",
+        "airflow_m3_h_m": 0.20,
+        "transfer_efficiency_pct_default": 12.0,
+        "otr_kg_o2_h_m_conservative": 0.015,
+        "otr_kg_o2_h_m_standard": 0.025,
+        "otr_kg_o2_h_m_optimistic": 0.040,
+        "otr_kg_o2_h_m_high_efficiency": 0.060,
+        "spacing_m": 0.8,
+        "note": "Material do fornecedor informa microbolhas e baixa resistência, mas sem SOTR/SAE certificado; usar como estimativa preliminar editável. Para projeto preliminar, utilizar 0,025 kg O₂/h/m como referência padrão em 1,20 m de profundidade.",
+    },
+    {
+        "name": "Mangueira porosa genérica para ar",
+        "category": "mangueira_porosa_ar",
+        "airflow_m3_h_m": 0.15,
+        "transfer_efficiency_pct_default": 8.0,
+        "otr_kg_o2_h_m_conservative": 0.012,
+        "otr_kg_o2_h_m_standard": 0.018,
+        "otr_kg_o2_h_m_optimistic": 0.030,
+        "otr_kg_o2_h_m_high_efficiency": 0.040,
+        "spacing_m": 0.8,
+        "note": "Referência preliminar para mangueiras porosas sem SOTR/SAE certificado. Ajustar com ficha técnica e teste de campo.",
+    },
+    {
+        "name": "Difusor fino/microbolhas",
+        "category": "microbolhas_ar",
+        "airflow_m3_h_m": 0.25,
+        "transfer_efficiency_pct_default": 15.0,
+        "otr_kg_o2_h_m_conservative": 0.020,
+        "otr_kg_o2_h_m_standard": 0.035,
+        "otr_kg_o2_h_m_optimistic": 0.050,
+        "otr_kg_o2_h_m_high_efficiency": 0.070,
+        "spacing_m": 0.7,
+        "note": "Referência preliminar para difusão de bolhas finas; exige controle de colmatação, filtragem de ar e manutenção.",
+    },
+    {
+        "name": "Mangueira técnica de oxigenação tipo SOLVOX",
+        "category": "oxigenio_puro",
+        "airflow_m3_h_m": 0.10,
+        "transfer_efficiency_pct_default": 80.0,
+        "otr_kg_o2_h_m_conservative": 0.050,
+        "otr_kg_o2_h_m_standard": 0.080,
+        "otr_kg_o2_h_m_optimistic": 0.120,
+        "otr_kg_o2_h_m_high_efficiency": 0.180,
+        "spacing_m": 0.8,
+        "note": "Uso com oxigênio, não ar. Dimensionar por vazão de O₂, pressão, profundidade e curva do fabricante.",
+    },
+]
+
 GROWTH_SUBRANGES_V2 = [
     {"label": "1-5 g", "min_g": 1.0, "max_g": 5.0, "daily_gain_28_g": 0.15, "evidence": "provisório consolidado"},
     {"label": "5-20 g", "min_g": 5.0, "max_g": 20.0, "daily_gain_28_g": 0.75, "evidence": "âncora bibliográfica"},
@@ -215,23 +266,123 @@ def _surface_effective_sort(equipment: dict, temp_factor: float, altitude_factor
     return equipment["sort_kg_h"] * temp_factor * altitude_factor * field_factor
 
 
-def _surface_max_units_per_tank(system_type: str, technology: str) -> int:
-    """Limite físico-operacional conservador por tanque."""
-    if technology == "Chafariz":
-        # Premissa validada no projeto: para chafariz, adotar no máximo 1 unidade por tanque.
-        # Se a altitude/demanda exigir mais que isso, o cenário deve acusar restrição técnica
-        # em vez de aumentar artificialmente a oferta instalada.
-        return 1
-    if technology == "Pás":
-        return 2
-    return 1
+def _fountain_arrangement_for_quantity(qty: int) -> tuple[str, str]:
+    if qty <= 1:
+        return "A1", "1 central"
+    if qty == 2:
+        return "A2", "2 opostos a 180°"
+    if qty == 3:
+        return "A3", "3 em triângulo a 120°"
+    return "A4", "4 em quadrantes a 90°"
 
 
-def _surface_technology_allowed(system_type: str, technology: str) -> bool:
+def _fountain_max_units_for_model(geometry: dict, equipment: dict, margin_m: float = 0.50) -> tuple[int, dict]:
+    """
+    Máximo geométrico de chafarizes em tanque circular, com base nos critérios
+    da tabela A1-A4: folga mínima de borda e não sobreposição da mancha/lance.
+    """
+    diameter = float(geometry.get("diameter_m", 0.0) or 0.0)
+    launch = float(equipment.get("launch_diameter_m", 0.0) or 0.0)
+
+    if diameter <= 0.0:
+        span = _clear_span_for_surface_aeration(geometry)
+        if span <= 0.0 or launch <= 0.0:
+            return 1, {"arrangement": "A1", "arrangement_label": "1 central", "install_radius_m": 0.0, "edge_clearance_m": 0.0}
+        ok = span >= launch * 1.20
+        return (1 if ok else 0), {"arrangement": "A1", "arrangement_label": "1 central", "install_radius_m": 0.0, "edge_clearance_m": round(max(0.0, span / 2.0 - launch / 2.0), 2)}
+
+    tank_radius = diameter / 2.0
+    if launch <= 0.0:
+        return 1, {"arrangement": "A1", "arrangement_label": "1 central", "install_radius_m": 0.0, "edge_clearance_m": round(tank_radius, 2)}
+
+    spot_radius = launch / 2.0
+    max_install_radius = tank_radius - spot_radius - margin_m
+
+    def _fits(qty: int) -> tuple[bool, float]:
+        if qty <= 1:
+            return tank_radius >= spot_radius + margin_m, 0.0
+        if qty == 2:
+            min_radius = spot_radius
+        elif qty == 3:
+            min_radius = launch / math.sqrt(3.0)
+        else:
+            min_radius = launch / math.sqrt(2.0)
+        return max_install_radius >= min_radius, max_install_radius
+
+    best_qty = 0
+    best_radius = 0.0
+    for qty in (1, 2, 3, 4):
+        fits, install_radius = _fits(qty)
+        if fits:
+            best_qty = qty
+            best_radius = install_radius
+
+    arrangement, label = _fountain_arrangement_for_quantity(best_qty)
+    edge_clearance = tank_radius - best_radius - spot_radius if best_qty > 1 else tank_radius - spot_radius
+    return best_qty, {
+        "arrangement": arrangement,
+        "arrangement_label": label,
+        "install_radius_m": round(best_radius, 2),
+        "edge_clearance_m": round(edge_clearance, 2),
+        "launch_diameter_m": round(launch, 2),
+        "tank_diameter_m": round(diameter, 2),
+        "margin_m": margin_m,
+    }
+
+
+def _surface_max_units_per_tank(system_type: str, technology: str, equipment: dict | None = None, geometry: dict | None = None) -> int:
+    """Compatibilidade antiga: retorna só o número máximo."""
+    max_units, _info = _surface_max_units_per_tank_info(system_type, technology, equipment, geometry)
+    return max_units
+
+
+def _surface_max_units_per_tank_info(system_type: str, technology: str, equipment: dict | None = None, geometry: dict | None = None) -> tuple[int, dict]:
+    """Limite geométrico-operacional por tanque com dados do arranjo."""
+    geometry = geometry or {}
+    equipment = equipment or {}
+    span = _clear_span_for_surface_aeration(geometry)
+    shape = str(geometry.get("shape", "")).lower()
+
     if technology == "Chafariz":
-        return system_type in ("Circular revestido", "Suspenso revestido retangular")
+        if system_type == "Circular revestido" or shape == "circular":
+            return _fountain_max_units_for_model(geometry, equipment)
+        launch = float(equipment.get("launch_diameter_m", 0.0) or 0.0)
+        if span <= 0.0 or launch <= 0.0:
+            return 1, {"arrangement": "A1", "arrangement_label": "1 central"}
+        return (1 if span >= launch * 1.20 else 0), {"arrangement": "A1", "arrangement_label": "1 central"}
+
     if technology == "Pás":
-        return system_type in ("Suspenso revestido retangular", "Escavado revestido")
+        diameter = float(geometry.get("diameter_m", 0.0) or 0.0)
+        area = float(geometry.get("surface_area_m2", 0.0) or 0.0)
+        if system_type == "Circular revestido" or shape == "circular":
+            # Pás não são limitadas por lançamento de água como o chafariz.
+            # Em tanques circulares grandes, o limite físico pode ser maior que 4.
+            # O sistema separa limite geométrico de alerta econômico/energético.
+            if diameter >= 26.0:
+                return 12, {"arrangement": "cruz/X", "arrangement_label": "até 12 pás em arranjos cruzados ou em X; avaliar custo energético"}
+            if diameter >= 20.0:
+                return 8, {"arrangement": "cruz/X", "arrangement_label": "até 8 pás em tanque circular grande; avaliar custo energético"}
+            if diameter >= 14.0:
+                return 4, {"arrangement": "auxiliar", "arrangement_label": "até 4 pás auxiliares em tanque circular médio/grande"}
+            if diameter >= 10.0:
+                return 2, {"arrangement": "auxiliar", "arrangement_label": "até 2 pás auxiliares com cautela operacional"}
+            return 0, {"arrangement": "não recomendado", "arrangement_label": "diâmetro insuficiente para pás"}
+        if area < 120.0:
+            return 1, {"arrangement": "linear", "arrangement_label": "1 pá por unidade"}
+        return max(1, min(int(area // 180.0) + 1, 12)), {"arrangement": "linear", "arrangement_label": "pás distribuídas no comprimento; avaliar custo energético"}
+
+    return 1, {}
+
+
+def _surface_technology_allowed(system_type: str, technology: str, geometry: dict | None = None) -> bool:
+    geometry = geometry or {}
+    span = _clear_span_for_surface_aeration(geometry)
+    if technology == "Chafariz":
+        return system_type in ("Circular revestido", "Suspenso revestido retangular", "Escavado revestido")
+    if technology == "Pás":
+        if system_type == "Circular revestido":
+            return span >= 10.0
+        return system_type in ("Circular revestido", "Suspenso revestido retangular", "Escavado revestido")
     return True
 
 
@@ -244,67 +395,74 @@ def suggest_surface_aerator(
     field_factor: float,
     geometry: dict | None = None,
 ) -> dict:
-    """
-    Dimensiona aeradores superficiais com restrição física por tanque.
-
-    Regra técnica importante:
-    - a demanda biológica de O₂ do lote não aumenta apenas por altitude;
-    - a oferta efetiva de cada equipamento diminui pela altitude;
-    - em modo automático, o sistema pode aumentar o número de equipamentos até o limite físico;
-    - se a quantidade exigida passar do limite físico por tanque, o cenário é marcado como inadequado
-      e a oferta instalada fica limitada ao máximo instalável.
-    """
+    """Dimensiona aeradores superficiais com leitura geométrica e operacional."""
     library = FOUNTAIN_LIBRARY if technology == "Chafariz" else PADDLEWHEEL_LIBRARY
-    allowed = _surface_technology_allowed(system_type, technology)
-    max_units = _surface_max_units_per_tank(system_type, technology)
     geometry = geometry or {}
+    allowed = _surface_technology_allowed(system_type, technology, geometry)
 
     best = None
     for equipment in library:
         sea_level_effective_sort = _surface_effective_sort(equipment, temp_factor, 1.0, field_factor)
         effective_sort = _surface_effective_sort(equipment, temp_factor, altitude_factor, field_factor)
-
+        max_units, arrangement_info = _surface_max_units_per_tank_info(system_type, technology, equipment, geometry)
         qty_required = math.ceil(oxygen_demand_per_tank_kg_h / effective_sort) if effective_sort > 0 else max_units + 1
         qty_required = max(qty_required, 0)
         qty_installed = min(qty_required, max_units) if allowed else 0
 
         geom_allowed, geom_warning = _surface_geometry_check(technology, equipment, geometry)
-        feasible = allowed and geom_allowed and qty_required <= max_units
-
-        installed_supply = effective_sort * qty_installed
-        sea_level_supply = sea_level_effective_sort * qty_installed
-        supply_shortfall = max(0.0, oxygen_demand_per_tank_kg_h - installed_supply)
+        if technology == "Chafariz":
+            geom_allowed = max_units > 0
+            if not geom_allowed:
+                geom_warning = "Nenhum arranjo A1-A4 atende à folga geométrica mínima para este modelo no tanque informado."
+        feasible = allowed and geom_allowed and qty_required <= max_units and qty_installed > 0
+        installed_supply = effective_sort * max(qty_installed, 0)
+        sea_level_supply = sea_level_effective_sort * max(qty_installed, 0)
         peak_use_pct = (oxygen_demand_per_tank_kg_h / installed_supply * 100.0) if installed_supply > 0 else 999.0
         excess_ratio = (installed_supply / oxygen_demand_per_tank_kg_h) if oxygen_demand_per_tank_kg_h > 0 else 0.0
-        preferred_peak_target = 85.0
 
         if not allowed:
-            warning = f"Tecnologia {technology} não recomendada para {system_type}."
+            if technology == "Pás" and system_type == "Circular revestido":
+                warning = "Aerador de pás não recomendado para tanque circular pequeno; em tanques circulares grandes pode ser usado como tecnologia auxiliar de circulação/vórtice."
+            else:
+                warning = f"Tecnologia {technology} não recomendada para {system_type}."
         elif not geom_allowed:
             warning = geom_warning
+        elif max_units <= 0:
+            warning = f"Geometria insuficiente para instalar {technology.lower()} com segurança neste tanque."
         elif qty_required > max_units:
             warning = (
                 f"A condição simulada exige cerca de {qty_required} equipamento(s) por tanque, "
-                f"mas o limite operacional adotado para {technology.lower()} é {max_units} por tanque. "
-                "A oferta exibida foi limitada ao máximo fisicamente adotado, portanto a relação oferta/demanda "
-                "pode ficar abaixo de 1,0. Recomenda-se equipamento mais robusto, outra tecnologia de aeração "
-                "ou revisão da biomassa/densidade."
+                f"mas o limite geométrico-operacional estimado para {technology.lower()} é {max_units}. "
+                "Recomenda-se equipamento mais robusto, tecnologia combinada, soprador/difusão ou revisão da biomassa/densidade."
+            )
+        elif technology == "Pás" and system_type == "Circular revestido":
+            warning = (
+                "Aerador de pás permitido para tanque circular grande como tecnologia de circulação/vórtice. "
+                "O limite exibido é geométrico-operacional; acima de 4 unidades, avaliar custo de aquisição, energia e eficiência marginal. "
+                "Validar posicionamento para favorecer concentração de sólidos no dreno central sem ressuspensão excessiva."
             )
         else:
             warning = ""
 
         score = (
             0 if feasible else 1,
-            supply_shortfall,
-            abs(peak_use_pct - preferred_peak_target) if feasible else 999.0,
-            equipment["consumption_kwh"] * max(qty_installed, 0),
-            equipment["power_cv"],
+            max(0.0, oxygen_demand_per_tank_kg_h - installed_supply),
+            abs(peak_use_pct - 85.0),
+            equipment.get("consumption_kwh", 0.0) * max(qty_installed, 0),
+            equipment.get("power_cv", 0.0),
         )
         candidate = {
             "technology": technology,
             "allowed": allowed,
             "feasible": feasible,
             "max_units_per_tank": max_units,
+            "arrangement": arrangement_info.get("arrangement", "-") if isinstance(arrangement_info, dict) else "-",
+            "arrangement_label": arrangement_info.get("arrangement_label", "-") if isinstance(arrangement_info, dict) else "-",
+            "install_radius_m": arrangement_info.get("install_radius_m", 0.0) if isinstance(arrangement_info, dict) else 0.0,
+            "edge_clearance_m": arrangement_info.get("edge_clearance_m", 0.0) if isinstance(arrangement_info, dict) else 0.0,
+            "launch_diameter_m": arrangement_info.get("launch_diameter_m", equipment.get("launch_diameter_m", 0.0)) if isinstance(arrangement_info, dict) else equipment.get("launch_diameter_m", 0.0),
+            "tank_diameter_m": arrangement_info.get("tank_diameter_m", geometry.get("diameter_m", 0.0)) if isinstance(arrangement_info, dict) else geometry.get("diameter_m", 0.0),
+            "qty_required_per_tank": qty_required,
             "model": equipment["model"],
             "power_cv": equipment["power_cv"],
             "consumption_kwh_each": equipment["consumption_kwh"],
@@ -312,14 +470,13 @@ def suggest_surface_aerator(
             "sea_level_effective_sort_kg_h": sea_level_effective_sort,
             "effective_sort_kg_h": effective_sort,
             "altitude_factor": altitude_factor,
-            "qty_required_per_tank": qty_required,
             "qty_per_tank": max(qty_installed, 0),
             "installed_supply_per_tank_kg_h": installed_supply,
             "sea_level_supply_per_tank_kg_h": sea_level_supply,
-            "supply_shortfall_per_tank_kg_h": supply_shortfall,
             "peak_use_pct": round(peak_use_pct, 1),
             "excess_ratio": round(excess_ratio, 3),
             "warning": warning,
+            "geometry_span_m": _clear_span_for_surface_aeration(geometry),
             "_score": score,
         }
         if best is None or score < best["_score"]:
@@ -330,17 +487,119 @@ def suggest_surface_aerator(
             "technology": technology,
             "allowed": False,
             "feasible": False,
-            "max_units_per_tank": max_units,
+            "max_units_per_tank": 0,
             "model": "-",
-            "qty_required_per_tank": 0,
             "qty_per_tank": 0,
             "effective_sort_kg_h": 0.0,
             "installed_supply_per_tank_kg_h": 0.0,
-            "supply_shortfall_per_tank_kg_h": oxygen_demand_per_tank_kg_h,
             "warning": "Sem modelo disponível.",
         }
     best.pop("_score", None)
     return best
+
+
+def _diffuser_otr_reference(diffusion_eff_pct: float, diffuser: dict) -> tuple[float, str]:
+    """Converte a seleção simples de eficiência em OTR preliminar por metro.
+
+    Base operacional:
+    - conservador: 0,015 kg O₂/h/m
+    - padrão: 0,025 kg O₂/h/m
+    - otimista: 0,040 kg O₂/h/m
+    - alta eficiência: 0,050 a 0,080 kg O₂/h/m
+    """
+    try:
+        eff = float(diffusion_eff_pct)
+    except (TypeError, ValueError):
+        eff = float(diffuser.get("transfer_efficiency_pct_default", 12.0) or 12.0)
+    if eff <= 8.0:
+        return float(diffuser.get("otr_kg_o2_h_m_conservative", 0.015)), "conservador"
+    if eff <= 14.0:
+        return float(diffuser.get("otr_kg_o2_h_m_standard", 0.025)), "padrão/intermediário"
+    if eff <= 22.0:
+        return float(diffuser.get("otr_kg_o2_h_m_optimistic", 0.040)), "otimista"
+    return float(diffuser.get("otr_kg_o2_h_m_high_efficiency", 0.060)), "alta eficiência"
+
+
+def _operational_diffuser_meter_limits(unit_volume_m3: float, density_kg_m3: float) -> tuple[float, float, str]:
+    """Faixa operacional preliminar de mangueira por tanque."""
+    volume = max(float(unit_volume_m3 or 0.0), 0.1)
+    density = max(float(density_kg_m3 or 0.0), 0.0)
+    if density <= 25.0:
+        rec = volume * 0.45
+        max_reasonable = volume * 0.80
+        note = "densidade até 25 kg/m³: mangueira porosa pode atuar como fonte principal com soprador adequado e reserva."
+    elif density <= 50.0:
+        rec = volume * 0.65
+        max_reasonable = volume * 0.95
+        note = "densidade de 25 a 50 kg/m³: usar como fonte principal apenas com cautela; tecnologia combinada é recomendável."
+    elif density <= 75.0:
+        rec = volume * 0.90
+        max_reasonable = volume * 1.20
+        note = "densidade acima de 50 kg/m³: não confiar em mangueira porosa com ar como única fonte de segurança."
+    else:
+        rec = volume * 1.10
+        max_reasonable = volume * 1.50
+        note = "densidade muito alta: mangueira porosa deve ser suporte/backup/distribuição; avaliar oxigênio puro ou tecnologia combinada."
+    return rec, max_reasonable, note
+
+
+def _estimate_diffuser_layout(
+    oxygen_demand_per_tank_kg_h: float,
+    number_of_units: int,
+    geometry: dict,
+    diffusion_eff_pct: float,
+    altitude_factor: float,
+    field_factor: float,
+    blower_airflow_m3_h_each: float,
+    blower_qty: int,
+    density_kg_m3: float = 0.0,
+) -> dict:
+    """Estimativa preliminar de metros de mangueira/difusor por tanque."""
+    diffuser = DIFFUSER_LIBRARY[0]
+    otr_base, otr_class = _diffuser_otr_reference(diffusion_eff_pct, diffuser)
+    kg_o2_per_m_h = max(0.001, otr_base * altitude_factor)
+    meters_required = oxygen_demand_per_tank_kg_h / kg_o2_per_m_h if kg_o2_per_m_h > 0 else 0.0
+
+    unit_volume = float(geometry.get("unit_volume_m3", 0.0) or 0.0)
+    recommended_m, max_reasonable_m, density_note = _operational_diffuser_meter_limits(unit_volume, density_kg_m3)
+    meters_recommended = min(meters_required, max_reasonable_m)
+    is_excessive = meters_required > max_reasonable_m
+
+    air_per_m = float(diffuser.get("airflow_m3_h_m", 0.20) or 0.20)
+    available_air_per_tank = (blower_airflow_m3_h_each * max(blower_qty, 0)) / max(number_of_units, 1)
+    max_meters_by_air = available_air_per_tank / air_per_m if air_per_m > 0 else 0.0
+    diameter = float(geometry.get("diameter_m", 0.0) or 0.0)
+    circumference = math.pi * diameter if diameter > 0 else 0.0
+    rings = math.ceil(meters_recommended / circumference) if circumference > 0 else 0
+
+    if is_excessive:
+        layout_note = (
+            "A metragem calculada para suprir toda a demanda de O₂ ultrapassa a faixa operacional/econômica razoável. "
+            "Recomenda-se tecnologia combinada, soprador/difusor de maior eficiência, redução de densidade ou oxigênio suplementar."
+        )
+    else:
+        layout_note = "Distribuir em anéis ou segmentos próximos ao fundo, mantendo acesso para limpeza e evitando interferência com dreno central."
+
+    return {
+        "diffuser_name": diffuser["name"],
+        "diffuser_note": diffuser["note"],
+        "airflow_m3_h_per_m": air_per_m,
+        "effective_transfer_efficiency_pct": diffusion_eff_pct,
+        "otr_reference_class": otr_class,
+        "kg_o2_per_m_h": kg_o2_per_m_h,
+        "meters_per_tank_required": meters_required,
+        "meters_per_tank_recommended": meters_recommended,
+        "meters_total_required": meters_required * max(number_of_units, 1),
+        "meters_total_recommended": meters_recommended * max(number_of_units, 1),
+        "operational_recommended_m_per_tank": recommended_m,
+        "operational_max_reasonable_m_per_tank": max_reasonable_m,
+        "is_metrage_excessive": is_excessive,
+        "density_note": density_note,
+        "available_air_m3_h_per_tank": available_air_per_tank,
+        "max_meters_by_available_air_per_tank": max_meters_by_air,
+        "estimated_rings_per_tank": rings,
+        "layout_note": layout_note,
+    }
 
 def _blower_capacity_kg_h(blower: dict, diffusion_eff_pct: float, altitude_factor: float, field_factor: float) -> float:
     # 1 m3 de ar contém aproximadamente 0,275 kg de O2; aplicamos eficiência efetiva de transferência.
@@ -516,6 +775,9 @@ def suggest_blower(
     diffusion_eff_pct: float,
     altitude_factor: float,
     field_factor: float,
+    oxygen_demand_per_tank_kg_h: float = 0.0,
+    number_of_units: int = 1,
+    geometry: dict | None = None,
 ) -> dict:
     if blower_type == "Radial":
         library = RADIAL_BLOWER_LIBRARY
@@ -524,12 +786,24 @@ def suggest_blower(
     else:
         library = RADIAL_BLOWER_LIBRARY + LOBULAR_BLOWER_LIBRARY
 
+    geometry = geometry or {}
     best = None
     for blower in library:
         sea_level_cap_each = _blower_capacity_kg_h(blower, diffusion_eff_pct, 1.0, field_factor)
         cap_each = _blower_capacity_kg_h(blower, diffusion_eff_pct, altitude_factor, field_factor)
         qty = math.ceil(oxygen_demand_total_kg_h / cap_each) if cap_each > 0 else 99
         total_power = blower["power_kw"] * max(qty, 0)
+        diffuser_layout = _estimate_diffuser_layout(
+            oxygen_demand_per_tank_kg_h=oxygen_demand_per_tank_kg_h,
+            number_of_units=number_of_units,
+            geometry=geometry,
+            diffusion_eff_pct=diffusion_eff_pct,
+            altitude_factor=altitude_factor,
+            field_factor=field_factor,
+            blower_airflow_m3_h_each=blower["airflow_m3_h"],
+            blower_qty=max(qty, 0),
+            density_kg_m3=float(geometry.get("density_kg_m3", 0.0) or 0.0),
+        )
         score = (total_power, qty, blower["power_kw"])
         candidate = {
             "technology": "Soprador",
@@ -544,6 +818,7 @@ def suggest_blower(
             "altitude_factor": altitude_factor,
             "installed_supply_total_kg_h": cap_each * max(qty, 0),
             "sea_level_supply_total_kg_h": sea_level_cap_each * max(qty, 0),
+            "diffuser_layout": diffuser_layout,
             "_score": score,
         }
         if best is None or score < best["_score"]:
@@ -865,6 +1140,21 @@ def build_production_schedule(
     revenue_year1 = revenue_per_harvest * harvests_year1
     feed_year1_kg = feed_per_harvest_kg * harvests_year1
 
+    # Ano 2 / regime estabilizado: depois da rampa biológica inicial,
+    # o sistema passa a operar com despescas regulares.
+    harvests_year2_stable = harvests_per_year_stable
+    production_year2_kg = production_per_harvest_kg * harvests_year2_stable
+    revenue_year2 = revenue_per_harvest * harvests_year2_stable
+    feed_year2_kg = feed_per_harvest_kg * harvests_year2_stable
+    monthly_production_stable_kg = production_year2_kg / 12.0 if production_year2_kg else 0.0
+    monthly_revenue_stable = revenue_year2 / 12.0 if revenue_year2 else 0.0
+    monthly_feed_stable_kg = feed_year2_kg / 12.0 if feed_year2_kg else 0.0
+
+    # Alevinos por despesca/lote considera a quantidade de tanques por lote.
+    fish_stocked_per_harvest_batch = fish_stocked_per_cycle * max(units_per_batch_exact, 1.0)
+    fish_stocked_year1 = fish_stocked_per_harvest_batch * harvests_year1
+    fish_stocked_year2 = fish_stocked_per_harvest_batch * harvests_year2_stable
+
     batch_distribution_note = ""
     if strategy == "Escalonada" and basis == "Intervalo entre despescas":
         batch_distribution_note = f"Com {inp.number_of_units} tanque(s) e intervalo de {harvest_interval_months:.2f} mês(es), o sistema trabalha com {batches_in_parallel} lote(s) em paralelo; a primeira receita ocorre apenas após o fechamento do ciclo biológico inicial."
@@ -892,6 +1182,16 @@ def build_production_schedule(
         "production_year1_kg": production_year1_kg,
         "revenue_year1": revenue_year1,
         "feed_year1_kg": feed_year1_kg,
+        "harvests_year2_stable": harvests_year2_stable,
+        "production_year2_kg": production_year2_kg,
+        "revenue_year2": revenue_year2,
+        "feed_year2_kg": feed_year2_kg,
+        "monthly_production_stable_kg": monthly_production_stable_kg,
+        "monthly_revenue_stable": monthly_revenue_stable,
+        "monthly_feed_stable_kg": monthly_feed_stable_kg,
+        "fish_stocked_per_harvest_batch": fish_stocked_per_harvest_batch,
+        "fish_stocked_year1": fish_stocked_year1,
+        "fish_stocked_year2": fish_stocked_year2,
         "minimum_units_suggested": suggested_units,
         "status": status,
         "recommendation": recommendation,
@@ -985,8 +1285,287 @@ def resolve_economic_costs(inp: DashboardProjectInput) -> dict:
 
 
 
+
+def suggest_hybrid_fountain_paddle(
+    system_type: str,
+    oxygen_demand_per_tank_kg_h: float,
+    temp_factor: float,
+    altitude_factor: float,
+    field_factor: float,
+    geometry: dict,
+) -> dict:
+    """
+    Dimensionamento híbrido preliminar: chafariz para oxigenação superficial
+    e pás como complemento de oxigenação/circulação quando a geometria permitir.
+
+    A lógica usa primeiro o melhor arranjo A1-A4 de chafariz. Havendo déficit,
+    complementa com pás até o limite geométrico-operacional. Em tanques circulares
+    grandes, pode incluir 1 pá auxiliar para reforço de vórtice/circulação.
+    """
+    fountain = suggest_surface_aerator(
+        "Chafariz", system_type, oxygen_demand_per_tank_kg_h,
+        temp_factor, altitude_factor, field_factor, geometry
+    )
+    paddle = suggest_surface_aerator(
+        "Pás", system_type, oxygen_demand_per_tank_kg_h,
+        temp_factor, altitude_factor, field_factor, geometry
+    )
+
+    f_qty = int(fountain.get("qty_per_tank", 0) or 0)
+    f_supply = float(fountain.get("installed_supply_per_tank_kg_h", 0.0) or 0.0)
+    f_supply_sea = float(fountain.get("sea_level_supply_per_tank_kg_h", f_supply) or 0.0)
+    f_power = float(fountain.get("consumption_kwh_each", 0.0) or 0.0) * f_qty
+
+    shortfall = max(0.0, oxygen_demand_per_tank_kg_h - f_supply)
+    paddle_allowed = bool(paddle.get("allowed", False))
+    p_unit_supply = float(paddle.get("effective_sort_kg_h", 0.0) or 0.0)
+    p_unit_supply_sea = float(paddle.get("sea_level_effective_sort_kg_h", p_unit_supply) or 0.0)
+    p_max = int(paddle.get("max_units_per_tank", 0) or 0)
+
+    diameter = float(geometry.get("diameter_m", 0.0) or 0.0)
+    # Em tanque circular grande, admite-se 1 pá auxiliar para vórtice/circulação,
+    # mesmo quando o chafariz já cobre a demanda de O2.
+    auxiliary_for_vortex = 1 if (paddle_allowed and diameter >= 14.0 and shortfall <= 0.0) else 0
+    p_qty_needed = math.ceil(shortfall / p_unit_supply) if shortfall > 0.0 and p_unit_supply > 0.0 else auxiliary_for_vortex
+    p_qty = min(max(p_qty_needed, 0), p_max) if paddle_allowed else 0
+
+    p_supply = p_unit_supply * p_qty
+    p_supply_sea = p_unit_supply_sea * p_qty
+    p_power = float(paddle.get("consumption_kwh_each", 0.0) or 0.0) * p_qty
+
+    total_supply = f_supply + p_supply
+    total_supply_sea = f_supply_sea + p_supply_sea
+    ratio = total_supply / oxygen_demand_per_tank_kg_h if oxygen_demand_per_tank_kg_h > 0 else 0.0
+    feasible = ratio >= 1.0
+
+    warnings = []
+    if fountain.get("warning"):
+        warnings.append(str(fountain.get("warning")))
+    if shortfall > 0 and p_qty <= 0:
+        warnings.append("O arranjo de chafariz não cobre a demanda e não houve complementação por pás viável.")
+    elif shortfall > 0 and total_supply < oxygen_demand_per_tank_kg_h:
+        warnings.append("Mesmo com tecnologia híbrida, a oferta ainda fica abaixo da demanda estimada.")
+    if p_qty > 0:
+        warnings.append("Pás consideradas como apoio de circulação/vórtice; validar posicionamento para não ressuspender sólidos nem comprometer o dreno central.")
+
+    rows = []
+    if f_qty > 0:
+        rows.append({
+            "tecnologia": "Chafariz",
+            "modelo": fountain.get("model", "-"),
+            "quantidade_por_tanque": f_qty,
+            "quantidade": f_qty,
+            "arranjo": fountain.get("arrangement", "-"),
+            "arranjo_descricao": fountain.get("arrangement_label", "-"),
+            "oferta_por_tanque_kg_h": round(f_supply, 3),
+        })
+    if p_qty > 0:
+        rows.append({
+            "tecnologia": "Pás",
+            "modelo": paddle.get("model", "-"),
+            "quantidade_por_tanque": p_qty,
+            "quantidade": p_qty,
+            "arranjo": paddle.get("arrangement", "auxiliar"),
+            "arranjo_descricao": paddle.get("arrangement_label", "circulação/vórtice auxiliar"),
+            "oferta_por_tanque_kg_h": round(p_supply, 3),
+        })
+
+    return {
+        "technology": "Híbrido: Chafariz + Pás",
+        "model": " + ".join([r["modelo"] for r in rows]) if rows else "-",
+        "qty_per_tank": f_qty + p_qty,
+        "qty_fountain_per_tank": f_qty,
+        "qty_paddle_per_tank": p_qty,
+        "installed_supply_per_tank_kg_h": total_supply,
+        "sea_level_supply_per_tank_kg_h": total_supply_sea,
+        "power_kw_per_tank": f_power + p_power,
+        "feasible": feasible,
+        "oxygen_offer_demand_ratio": ratio,
+        "warning": " ".join(warnings).strip(),
+        "rows": rows,
+        "fountain_details": fountain,
+        "paddle_details": paddle,
+    }
+
+
+def suggest_hybrid_air_surface(blower: dict, surface_items: list[dict], oxygen_demand_total_kg_h: float, number_of_units: int) -> dict:
+    """
+    Combina soprador com chafariz e/ou pás sem somar equipamentos completos.
+
+    A versão anterior somava o soprador dimensionado para 100% da demanda com
+    aeradores superficiais também dimensionados para 100% da demanda. Isso criava
+    oferta artificialmente alta. Aqui a lógica passa a ser por parcelas:
+
+    - Chafariz: parcela superficial de oxigenação/renovação da lâmina d'água.
+    - Pás: parcela auxiliar, principalmente circulação/vórtice.
+    - Soprador: cobre apenas o residual de O₂ depois das parcelas superficiais.
+
+    Assim, o híbrido deixa de ser uma soma bruta e passa a ser uma composição
+    técnico-operacional orientada pela demanda real de O₂.
+    """
+    units = max(1, int(number_of_units or 1))
+    demand_total = max(0.0, float(oxygen_demand_total_kg_h or 0.0))
+    demand_per_tank = demand_total / units if units > 0 else demand_total
+
+    rows: list[dict] = []
+    total_supply = 0.0
+    sea_supply = 0.0
+    total_power = 0.0
+    total_qty = 0
+    warnings: list[str] = []
+
+    has_fountain = any(isinstance(i, dict) and i.get("technology") == "Chafariz" for i in surface_items)
+    has_paddle = any(isinstance(i, dict) and i.get("technology") == "Pás" for i in surface_items)
+
+    # Parcelas operacionais preliminares.
+    # Elas são intencionalmente conservadoras para evitar superdimensionamento:
+    # o soprador cobre o residual e as pás não devem ser tratadas como fonte principal.
+    target_share_by_technology = {
+        "Chafariz": 0.40 if has_paddle else 0.55,
+        "Pás": 0.15 if has_fountain else 0.25,
+    }
+
+    remaining_total = demand_total
+
+    for item in surface_items:
+        if not isinstance(item, dict):
+            continue
+
+        tech = str(item.get("technology", "superficial"))
+        unit_supply = max(0.0, float(item.get("effective_sort_kg_h", 0.0) or 0.0))
+        unit_supply_sea = max(0.0, float(item.get("sea_level_effective_sort_kg_h", unit_supply) or unit_supply))
+        max_qpt = max(0, int(item.get("max_units_per_tank", item.get("qty_per_tank", 0)) or 0))
+        power_each = max(0.0, float(item.get("consumption_kwh_each", 0.0) or 0.0))
+
+        if unit_supply <= 0.0 or max_qpt <= 0:
+            if item.get("warning"):
+                warnings.append(str(item.get("warning")))
+            continue
+
+        target_share = target_share_by_technology.get(tech, 0.20)
+        target_per_tank = demand_per_tank * target_share
+
+        # Nunca dimensionar a parcela superficial acima do residual por tanque.
+        target_per_tank = min(target_per_tank, max(0.0, remaining_total / units))
+
+        qpt_needed = math.ceil(target_per_tank / unit_supply) if target_per_tank > 0 else 0
+        qpt = min(max_qpt, max(0, qpt_needed))
+
+        # Para pás em tanque circular grande, admite-se uma unidade auxiliar para
+        # circulação/vórtice quando existe demanda total e a geometria permite.
+        if tech == "Pás" and qpt == 0 and demand_total > 0 and max_qpt > 0:
+            qpt = 1
+
+        q = qpt * units
+        supply_tank = unit_supply * qpt
+        sea_tank = unit_supply_sea * qpt
+        supply_total_component = supply_tank * units
+        sea_total_component = sea_tank * units
+
+        if qpt > 0:
+            rows.append({
+                "tecnologia": tech,
+                "modelo": item.get("model", "-"),
+                "quantidade_por_tanque": qpt,
+                "quantidade": q,
+                "arranjo": item.get("arrangement", "-"),
+                "arranjo_descricao": item.get("arrangement_label", "-"),
+                "oferta_por_tanque_kg_h": round(supply_tank, 3),
+                "papel_no_hibrido": (
+                    "oxigenação superficial parcial"
+                    if tech == "Chafariz"
+                    else "circulação/vórtice e apoio parcial de O₂"
+                ),
+            })
+            total_supply += supply_total_component
+            sea_supply += sea_total_component
+            total_power += power_each * q
+            total_qty += q
+            remaining_total = max(0.0, remaining_total - supply_total_component)
+
+    # Soprador cobre o residual, não a demanda inteira.
+    if isinstance(blower, dict) and remaining_total > 0:
+        cap_each = max(0.0, float(blower.get("effective_oxygen_capacity_each_kg_h", 0.0) or 0.0))
+        cap_each_sea = max(0.0, float(blower.get("sea_level_oxygen_capacity_each_kg_h", cap_each) or cap_each))
+        power_each = max(0.0, float(blower.get("power_kw_each", 0.0) or 0.0))
+
+        if cap_each > 0:
+            q = max(1, math.ceil(remaining_total / cap_each))
+            supply = cap_each * q
+            sea = cap_each_sea * q
+            total_supply += supply
+            sea_supply += sea
+            total_power += power_each * q
+            total_qty += q
+
+            rows.append({
+                "tecnologia": "Soprador",
+                "modelo": blower.get("model", "-"),
+                "quantidade_por_tanque": "sistema",
+                "quantidade": q,
+                "arranjo": "difusão",
+                "arranjo_descricao": blower.get("diffuser_layout", {}).get("diffuser_name", "mangueira/difusor"),
+                "oferta_por_tanque_kg_h": round(supply / units, 3),
+                "papel_no_hibrido": "cobertura do residual de O₂",
+            })
+
+            # Ajuste proporcional da metragem exibida quando houver layout.
+            # A metragem original é calculada para demanda plena; no híbrido, ela
+            # deve ser proporcional ao residual coberto pelo soprador.
+            layout = blower.get("diffuser_layout")
+            if isinstance(layout, dict) and demand_total > 0:
+                residual_fraction = min(1.0, max(0.0, remaining_total / demand_total))
+                adjusted_layout = dict(layout)
+                for key in ("meters_per_tank_required", "meters_total_required", "meters_per_tank_recommended", "meters_total_recommended"):
+                    if key in adjusted_layout and isinstance(adjusted_layout.get(key), (int, float)):
+                        adjusted_layout[key] = adjusted_layout[key] * residual_fraction
+                adjusted_layout["hybrid_residual_fraction"] = residual_fraction
+                rows[-1]["layout_hibrido"] = adjusted_layout
+
+            remaining_total = max(0.0, remaining_total - supply)
+        else:
+            warnings.append("Soprador selecionado sem capacidade efetiva calculável para cobrir o residual de O₂.")
+
+    ratio = total_supply / demand_total if demand_total > 0 else 0.0
+
+    if ratio < 1.0:
+        warnings.append("Tecnologia híbrida ainda abaixo da demanda estimada de O₂; revisar densidade, potência ou tecnologia.")
+    if ratio > 1.60:
+        warnings.append(
+            "A oferta híbrida ficou muito acima da demanda. Isso pode indicar equipamento mínimo muito grande "
+            "para o residual calculado; avaliar custo, modulação, escolha de modelos menores ou operação por etapas."
+        )
+    if has_paddle:
+        warnings.append("Pás usadas como apoio de circulação/vórtice; avaliar posicionamento e custo energético.")
+    if isinstance(blower, dict):
+        warnings.append("Soprador/difusão dimensionado para o residual do híbrido; validar pressão, perdas de carga e metragem em campo.")
+
+    return {
+        "technology": "Híbrido",
+        "model": " + ".join([str(r.get("modelo", "-")) for r in rows]) if rows else "-",
+        "qty_per_tank": None,
+        "quantity_total": total_qty,
+        "installed_supply_total_kg_h": total_supply,
+        "sea_level_supply_total_kg_h": sea_supply,
+        "installed_supply_per_tank_kg_h": total_supply / units,
+        "sea_level_supply_per_tank_kg_h": sea_supply / units,
+        "power_kw_total": total_power,
+        "feasible": ratio >= 1.0,
+        "oxygen_offer_demand_ratio": ratio,
+        "warning": " ".join(dict.fromkeys([w for w in warnings if w]).keys()),
+        "rows": rows,
+        "blower_details": blower,
+        "surface_details": surface_items,
+        "hybrid_logic_note": (
+            "Dimensionamento por demanda residual: componentes superficiais cobrem parcelas operacionais "
+            "e o soprador cobre apenas o O₂ remanescente."
+        ),
+    }
+
+
 def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
     geometry = compute_geometry(inp)
+    geometry["density_kg_m3"] = float(getattr(inp, "density_kg_m3", 0.0) or 0.0)
     inp.unit_volume_m3 = geometry["unit_volume_m3"]
 
     total_volume_m3 = inp.number_of_units * geometry["unit_volume_m3"]
@@ -1022,7 +1601,7 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
 
     suggested_fountain = suggest_surface_aerator("Chafariz", inp.system_type, oxygen_demand_per_tank_kg_h, temp_aeration_factor, altitude_factor, field_factor, geometry)
     suggested_paddle = suggest_surface_aerator("Pás", inp.system_type, oxygen_demand_per_tank_kg_h, temp_aeration_factor, altitude_factor, field_factor, geometry)
-    suggested_blower = suggest_blower(blower_type if blower_type in ("Radial", "Lobular") else "Automático", oxygen_demand_kg_h, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor)
+    suggested_blower = suggest_blower(blower_type if blower_type in ("Radial", "Lobular") else "Automático", oxygen_demand_kg_h, getattr(inp, "diffusion_efficiency_pct", 12.0), altitude_factor, field_factor, oxygen_demand_per_tank_kg_h, inp.number_of_units, geometry)
 
     selected_aeration = {
         "mode": aeration_mode,
@@ -1070,7 +1649,30 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
                 "compatibility_warning": chosen["warning"],
                 "details": chosen,
             })
-        else:
+        elif automatic_tech == "Híbrido: Chafariz + Pás":
+            chosen = suggest_hybrid_fountain_paddle(
+                inp.system_type,
+                oxygen_demand_per_tank_kg_h,
+                temp_aeration_factor,
+                altitude_factor,
+                field_factor,
+                geometry,
+            )
+            total_qty = int(chosen.get("qty_per_tank", 0) or 0) * inp.number_of_units
+            supply = float(chosen.get("installed_supply_per_tank_kg_h", 0.0) or 0.0) * inp.number_of_units
+            sea_level_supply = float(chosen.get("sea_level_supply_per_tank_kg_h", supply) or 0.0) * inp.number_of_units
+            power_kw = float(chosen.get("power_kw_per_tank", 0.0) or 0.0) * inp.number_of_units
+            selected_aeration.update({
+                "technology": "Híbrido: Chafariz + Pás",
+                "model": chosen["model"],
+                "quantity_total": total_qty,
+                "installed_oxygen_supply_kg_h": supply,
+                "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
+                "power_installed_kw": power_kw,
+                "compatibility_warning": chosen["warning"],
+                "details": chosen,
+            })
+        elif automatic_tech == "Soprador":
             chosen = suggested_blower
             total_qty = chosen["qty_system"]
             supply = chosen["installed_supply_total_kg_h"]
@@ -1083,6 +1685,28 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
                 "installed_oxygen_supply_kg_h": supply,
                 "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
                 "power_installed_kw": power_kw,
+                "compatibility_warning": chosen.get("warning", ""),
+                "details": chosen,
+            })
+        elif automatic_tech in ("Híbrido: Soprador + Pás", "Híbrido: Soprador + Chafariz", "Híbrido: Soprador + Chafariz + Pás"):
+            surface_items = []
+            if "Chafariz" in automatic_tech:
+                surface_items.append(suggested_fountain)
+            if "Pás" in automatic_tech:
+                surface_items.append(suggested_paddle)
+            chosen = suggest_hybrid_air_surface(suggested_blower, surface_items, oxygen_demand_kg_h, inp.number_of_units)
+            total_qty = int(chosen.get("quantity_total", 0) or 0)
+            supply = float(chosen.get("installed_supply_total_kg_h", 0.0) or 0.0)
+            sea_level_supply = float(chosen.get("sea_level_supply_total_kg_h", supply) or supply)
+            power_kw = float(chosen.get("power_kw_total", 0.0) or 0.0)
+            selected_aeration.update({
+                "technology": automatic_tech,
+                "model": chosen.get("model", "-"),
+                "quantity_total": total_qty,
+                "installed_oxygen_supply_kg_h": supply,
+                "installed_oxygen_supply_sea_level_kg_h": sea_level_supply,
+                "power_installed_kw": power_kw,
+                "compatibility_warning": chosen.get("warning", ""),
                 "details": chosen,
             })
     else:
@@ -1266,6 +1890,9 @@ def calculate_dashboard_project(inp: DashboardProjectInput) -> dict:
         "selected_aeration_power_kw": selected_aeration["power_installed_kw"],
         "selected_aeration_warning": selected_aeration["compatibility_warning"],
         "aeration_details": selected_aeration["details"],
+        "suggested_fountain_details": suggested_fountain,
+        "suggested_paddle_details": suggested_paddle,
+        "suggested_blower_details": suggested_blower,
         "oxygen_demand_kg_h": oxygen_demand_kg_h,
         "oxygen_demand_per_tank_kg_h": oxygen_demand_per_tank_kg_h,
         "altitude_factor": altitude_factor,
